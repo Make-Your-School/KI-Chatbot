@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Mentor*innen KI Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <!-- Login view -->
+      <section id="login" class="view" hidden>
+        <div class="login-card">
+          <h1>Mentor*innen KI Chat</h1>
+          <p class="subtitle">Chat mit dem Wissen unserer Mentor*innen</p>
+          <form id="login-form">
+            <label for="code-input">Schulcode</label>
+            <input
+              id="code-input"
+              name="code"
+              type="text"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              inputmode="text"
+              placeholder="z. B. MK4XQP"
+              required
+            />
+            <button type="submit">Einloggen</button>
+            <p id="login-error" class="error" hidden></p>
+          </form>
+          <p class="privacy">
+            Nichts von dem, was du hier schreibst, wird auf dem Server gespeichert.
+            Dein Chatverlauf bleibt nur in diesem Browser-Tab, bis du ihn schließt.
+          </p>
+        </div>
+      </section>
+
+      <!-- Chat view -->
+      <section id="chat" class="view" hidden>
+        <header class="chat-header">
+          <div>
+            <strong>Mentor*innen KI Chat</strong>
+          </div>
+          <div class="header-actions">
+            <button id="reset-btn" class="link-btn" title="Verlauf löschen">Neu starten</button>
+            <button id="logout-btn" class="link-btn">Abmelden</button>
+          </div>
+        </header>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <div id="starter-prompts" class="starter-prompts" hidden></div>
+
+        <form id="chat-form" class="composer">
+          <textarea
+            id="chat-input"
+            rows="2"
+            placeholder="Frag etwas... (Enter zum Senden, Shift+Enter für neue Zeile)"
+            required
+          ></textarea>
+          <button type="submit" id="send-btn">Senden</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

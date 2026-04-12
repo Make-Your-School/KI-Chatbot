@@ -1,0 +1,52 @@
+# OpenRouter Modell-Fallback-Liste für den Mentor*innen KI Chat.
+#
+# Diese Datei ist git-versioniert. Änderungen also entweder lokal committen
+# und auf dem Server `git pull`, oder direkt auf dem Server editieren (dann
+# aber daran denken, sie zurückzucommitten, sonst gehen die Änderungen beim
+# nächsten Pull verloren).
+#
+# Der Server liest die Datei live (mtime-cached) — kein Restart nötig.
+#
+# Format:
+#   - Eine Modell-ID pro Zeile, in Reihenfolge der Bevorzugung
+#   - OpenRouter probiert sie der Reihe nach: erstes Modell, das antwortet,
+#     wird genommen. Bei 429/Provider-down → nächstes
+#   - `#` kommentiert den Rest der Zeile aus, Leerzeilen werden ignoriert
+#
+# Wo finde ich Modell-IDs?
+#   https://openrouter.ai/models?max_price=0  → Modell anklicken → ID kopieren
+#
+# Reihenfolge für diesen Chat:
+#   - zuerst gute allgemeine Text-/Instruktionsmodelle
+#   - dann kleinere oder weniger verlässliche Fallbacks
+#   - Coder-, Thinking-, Vision- und sehr kleine Modelle absichtlich ganz unten
+
+# Starke allgemeine Chat-Modelle
+meta-llama/llama-3.3-70b-instruct:free
+openai/gpt-oss-120b:free
+qwen/qwen3-next-80b-a3b-instruct:free
+mistralai/mistral-small-3.1-24b-instruct:free
+z-ai/glm-4.5-air:free
+stepfun/step-3.5-flash:free
+google/gemma-3-27b-it:free
+google/gemma-3-12b-it:free
+nousresearch/hermes-3-llama-3.1-405b:free
+arcee-ai/trinity-large-preview:free
+cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+nvidia/nemotron-3-nano-30b-a3b:free
+openai/gpt-oss-20b:free
+
+# Kleinere Allround-Fallbacks
+google/gemma-3-4b-it:free
+nvidia/nemotron-nano-9b-v2:free
+google/gemma-3n-e4b-it:free
+google/gemma-3n-e2b-it:free
+qwen/qwen3-4b:free
+meta-llama/llama-3.2-3b-instruct:free
+arcee-ai/trinity-mini:free
+
+# Spezialisiert / zuletzt probieren
+liquid/lfm-2.5-1.2b-instruct:free
+qwen/qwen3-coder:free
+liquid/lfm-2.5-1.2b-thinking:free
+nvidia/nemotron-nano-12b-v2-vl:free

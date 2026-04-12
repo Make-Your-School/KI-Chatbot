@@ -1,0 +1,37 @@
+[Unit]
+Description=KI Hackdays Chat (Bun + Hono)
+After=network.target
+
+[Service]
+Type=simple
+User=kihd
+Group=kihd
+WorkingDirectory=/opt/ki-hackdays/server
+EnvironmentFile=/opt/ki-hackdays/server/.env
+ExecStart=/home/kihd/.bun/bin/bun src/index.ts
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+# read-only (not "true") so the service can read /home/kihd/.bun/bin/bun.
+# The app itself never writes to /home — all app data lives under /opt.
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/opt/ki-hackdays/server/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Network lock-down: nothing but loopback (chat server) + outbound to OpenRouter
+# must cross this process. Outbound is controlled at the firewall level.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+
+[Install]
+WantedBy=multi-user.target

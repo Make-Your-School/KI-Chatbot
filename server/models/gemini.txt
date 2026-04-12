@@ -1,0 +1,36 @@
+# Google AI Studio (Gemini) Modell-Fallback-Liste für den Mentor*innen KI Chat.
+#
+# Diese Datei ist git-versioniert. Änderungen entweder lokal committen und
+# auf dem Server `git pull`, oder direkt auf dem Server editieren (dann aber
+# zurückcommitten, sonst gehen sie beim nächsten Pull verloren).
+#
+# Der Server liest die Datei live (mtime-cached) — kein Restart nötig.
+#
+# Format:
+#   - Eine Modell-ID pro Zeile, in Reihenfolge der Bevorzugung
+#   - Anders als OpenRouter macht Google kein Server-Side-Routing — der
+#     Server iteriert selbst durch die Liste und probiert das nächste, wenn
+#     eins 429 oder 5xx zurückgibt
+#   - `#` kommentiert den Rest der Zeile aus, Leerzeilen werden ignoriert
+#
+# Wo finde ich Modell-IDs?
+#   https://ai.google.dev/gemini-api/docs/models  → Spalte "Model code"
+#
+# Reihenfolge für diesen Chat:
+#   - zuerst alltagstaugliche Textmodelle für viele kurze Schüler*innen-Fragen
+#   - dann kleinere / offenere Fallbacks
+#   - Gemini 2.0 Flash ist absichtlich entfernt, weil es laut Google veraltet ist
+
+# Hohe Free-Tier-Quote, schnell, für den Schulalltag als Erstwahl sinnvoll
+gemini-3.1-flash-lite-preview
+
+# Stärkere allgemeine Chat-Modelle
+gemini-2.5-flash
+gemini-3-flash-preview
+gemini-2.5-flash-lite
+
+# Open-weight Fallbacks in absteigender Größe
+gemma-3-27b-it
+gemma-3-12b-it
+gemma-3-4b-it
+gemma-3-1b-it

@@ -1,0 +1,31 @@
+# Caddy reverse proxy for ki-hackdays.de.
+# TLS certificates are obtained automatically via Let's Encrypt.
+#
+# Install:    apt install caddy
+# Place at:   /etc/caddy/Caddyfile
+# Apply:      systemctl reload caddy
+
+ki-hackdays.de, www.ki-hackdays.de {
+	encode zstd gzip
+
+	# SSE needs flushing, not buffering
+	reverse_proxy 127.0.0.1:3000 {
+		flush_interval -1
+	}
+
+	header {
+		# Basic hardening
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		# Don't leak the Caddy version
+		-Server
+	}
+
+	# Basic request-size ceiling. SSE responses can be long, but POSTed chat
+	# bodies are small (history is capped server-side too).
+	request_body {
+		max_size 1MB
+	}
+}

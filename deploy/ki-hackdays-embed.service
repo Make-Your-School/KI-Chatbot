@@ -1,0 +1,26 @@
+[Unit]
+Description=KI Hackdays Chat — nightly RAG re-embedding
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kihd
+Group=kihd
+WorkingDirectory=/opt/ki-hackdays/server
+EnvironmentFile=/opt/ki-hackdays/server/.env
+ExecStart=/home/kihd/.bun/bin/bun scripts/embed.ts
+# After a successful re-embed, restart the chat service so it picks up the
+# fresh knowledge.db (the service caches its DB handle).
+ExecStartPost=+/bin/systemctl restart ki-hackdays.service
+
+# Embedding is CPU-heavy; don't starve the chat service.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/opt/ki-hackdays/server/data

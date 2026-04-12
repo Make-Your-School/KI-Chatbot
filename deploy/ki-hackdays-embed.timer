@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly trigger for KI Hackdays RAG re-embedding
+
+[Timer]
+# Every night at 03:00 local time.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
