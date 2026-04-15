@@ -13,6 +13,13 @@
 import { config } from "./config.ts";
 import { debugContentLog, debugLog } from "./debug.ts";
 import { getModels, type Provider } from "./models.ts";
+import {
+  classifyStatus,
+  isHealthy,
+  listUnhealthy,
+  markHealthy,
+  markUnhealthy,
+} from "./providerHealth.ts";
 import { retrieve, formatContext } from "./rag.ts";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompts.ts";
 
@@ -108,8 +115,20 @@ const buildAttempts = (messages: OpenAIMessage[]): Attempt[] => {
   for (const provider of config.providerOrder) {
     if (provider === "gemini" && config.gemini.apiKey) {
       // Google AI Studio kennt kein server-seitiges Model-Routing, also
-      // legen wir pro Modell einen eigenen Versuch an.
-      for (const model of getModels("gemini")) {
+      // legen wir pro Modell einen eigenen Versuch an. Modelle die kürzlich
+      // 429/5xx oder Netzwerkfehler hatten, überspringen wir für die Cooldown-
+      // Dauer. Falls dadurch NICHTS übrig bleibt, probieren wir trotzdem alle
+      // — besser ein teurer Retry als "kein Anbieter verfügbar".
+      const allModels = getModels("gemini");
+      const healthy = allModels.filter(isHealthy);
+      const modelsToUse = healthy.length > 0 ? healthy : allModels;
+      if (healthy.length < allModels.length) {
+        debugLog("chat", "skipping unhealthy gemini models", {
+          skipped: allModels.filter(m => !isHealthy(m)),
+          unhealthy: listUnhealthy(),
+        });
+      }
+      for (const model of modelsToUse) {
         attempts.push({
           provider: "gemini",
           fallbackModel: model,
@@ -591,6 +610,7 @@ export async function* streamChat(
           provider: attempt.provider,
           label: attempt.label,
         });
+        if (attempt.provider === "gemini") markHealthy(attempt.fallbackModel);
         resp = r;
         chosen = attempt;
         break;
@@ -606,6 +626,10 @@ export async function* streamChat(
         status: r.status,
         bodyPreview: text.slice(0, 240),
       });
+      if (attempt.provider === "gemini") {
+        const kind = classifyStatus(r.status);
+        if (kind) markUnhealthy(attempt.fallbackModel, kind);
+      }
     } catch (err) {
       lastStatus = 0;
       console.error(
@@ -616,6 +640,7 @@ export async function* streamChat(
         label: attempt.label,
         message: (err as Error).message,
       });
+      if (attempt.provider === "gemini") markUnhealthy(attempt.fallbackModel, "network");
     }
   }
 

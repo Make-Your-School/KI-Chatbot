@@ -17,6 +17,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config } from "./config.ts";
 import { validateCode, issueSession, verifySession } from "./auth.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
+import { getEmbedder } from "./embeddings.ts";
 import { getModels, modelsFilePath } from "./models.ts";
 import { tryConsume, tryConsumeLogin } from "./ratelimit.ts";
 
@@ -133,16 +134,29 @@ app.post("/api/chat", async c => {
         closed = true;
         try { controller.close(); } catch {}
       };
-      const write = (ev: unknown): boolean => {
+      const rawWrite = (chunk: string): boolean => {
         if (closed) return false;
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          controller.enqueue(encoder.encode(chunk));
           return true;
         } catch {
           closed = true;
           return false;
         }
       };
+      const write = (ev: unknown): boolean =>
+        rawWrite(`data: ${JSON.stringify(ev)}\n\n`);
+      // SSE comment as immediate keepalive: signals to browser/proxy that the
+      // stream is live, even while the first turn is still doing RAG warmup.
+      rawWrite(": connected\n\n");
+      // Periodic keepalive during long quiet phases (RAG embedder warmup on
+      // cold start, LLM provider fallback after 503s). Without this, Bun's
+      // idleTimeout closes the connection silently mid-stream — the frontend
+      // then sees no token events and renders nothing.
+      const keepalive = setInterval(() => {
+        if (closed) return;
+        rawWrite(": keepalive\n\n");
+      }, 5000);
       try {
         for await (const ev of streamChat(history)) {
           if (!write(ev)) break;
@@ -152,6 +166,7 @@ app.post("/api/chat", async c => {
         console.error("[chat] stream error:", err);
         if (!closed) write({ type: "error", message: "Interner Fehler beim Streaming." });
       } finally {
+        clearInterval(keepalive);
         close();
       }
     },
@@ -215,8 +230,18 @@ if (config.debug.pipeline) {
   );
 }
 
+// Warm up the embedding model at boot so the first chat request doesn't pay
+// the ~10-20s transformers.js load. Runs async; we don't block server startup.
+getEmbedder()
+  .then(() => console.log("[ki-hackdays] embedder warm"))
+  .catch((err: Error) => console.error("[ki-hackdays] embedder warmup failed:", err.message));
+
 export default {
   port: config.port,
   hostname: config.host,
+  // Bun's default idleTimeout (10s) closes connections where no bytes flowed
+  // recently. SSE chat streams have long quiet phases (embedder warmup, LLM
+  // provider fallback) — default cuts them mid-response. 255 is the Bun max.
+  idleTimeout: 255,
   fetch: app.fetch,
 };

@@ -6,7 +6,12 @@
 # Apply:      systemctl reload caddy
 
 ki-hackdays.de, www.ki-hackdays.de {
-	encode zstd gzip
+	# Compress everything EXCEPT the SSE chat stream. Caddy's encode buffers
+	# chunks before flushing them, which turns live token streaming into "wait
+	# for the whole response, then dump it". `Cache-Control: no-transform` is
+	# not enough — encode ignores it.
+	@compressible not path /api/chat
+	encode @compressible zstd gzip
 
 	# SSE needs flushing, not buffering
 	reverse_proxy 127.0.0.1:3000 {

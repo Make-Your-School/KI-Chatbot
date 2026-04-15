@@ -595,6 +595,11 @@ Wenn das klappt: **fertig.** Glückwunsch.
 Wenn nicht: siehe [Troubleshooting](#troubleshooting). Die häufigsten Probleme stehen da drin.
 
 ---
+Übersicht kostenloser API LLMs
+
+https://github.com/cheahjs/free-llm-api-resources?tab=readme-ov-file#google-ai-studio
+
+---
 
 ### Updates einspielen (für später)
 
