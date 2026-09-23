@@ -411,6 +411,28 @@ button, .link-btn {
   flex-wrap: wrap;
   gap: .5rem;
 }
+
+/* Die Karten unter "Mehr dazu" als Raster statt als Flexzeile: so sind alle
+   gleich breit und je Zeile gleich hoch, egal ob mit Foto, mit Symbol oder
+   nur mit Text. Vorher bestimmte jede Karte ihre Breite selbst und das Feld
+   sah aus wie ein Setzkasten.
+   Der Quellenblock behält bewusst die Flexzeile — dort stehen lange Dateipfade,
+   die unterschiedlich breit sein dürfen. */
+.resources > .resource-list,
+.resource-videolist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  align-items: stretch;
+  gap: .5rem;
+}
+.resource-videolist {
+  margin-top: .5rem;
+}
+.resources > .resource-list > .resource-link,
+.resource-videolist > .resource-link {
+  width: auto;
+  min-width: 0;
+}
 .resource-link {
   display: flex;
   flex-direction: column;
@@ -765,9 +787,7 @@ button, .link-btn {
   flex-direction: column;
   align-items: stretch;
   gap: .4rem;
-  width: 9.5rem;
-  min-width: 9.5rem;
-  padding-top: .45rem;
+  padding-top: .55rem;
 }
 .resource-thumb {
   display: block;
@@ -827,28 +847,36 @@ button, .link-btn {
 .resource-stack-img[data-depth="1"] { transform: translateX(-50%) rotate(7deg); }
 .resource-stack-img[data-depth="2"] { transform: translateX(-50%) rotate(-7deg); }
 
-/* Beim Darüberfahren fächert der Stapel etwas weiter auf. */
-.resource-videogroup > summary:hover .resource-stack-img[data-depth="1"] {
+.resource-link.is-videogroup:hover .resource-stack-img[data-depth="1"] {
   transform: translateX(-42%) rotate(11deg);
 }
-.resource-videogroup > summary:hover .resource-stack-img[data-depth="2"] {
+.resource-link.is-videogroup:hover .resource-stack-img[data-depth="2"] {
   transform: translateX(-58%) rotate(-11deg);
 }
 /* Aufgeklappt braucht der Stapel nicht mehr zu locken — er legt sich flach. */
-.resource-videogroup[open] > summary .resource-stack-img[data-depth="1"],
-.resource-videogroup[open] > summary .resource-stack-img[data-depth="2"] {
+.resource-link.is-videogroup.is-open .resource-stack-img[data-depth="1"],
+.resource-link.is-videogroup.is-open .resource-stack-img[data-depth="2"] {
   transform: translateX(-50%) rotate(0deg);
 }
 @media (prefers-reduced-motion: reduce) {
   .resource-stack-img { transition: none; }
 }
 
+/* Die Videokarte ist ein Knopf, kein <details>. Ein <details> wächst beim
+   Aufklappen und schiebt die Karte an eine andere Stelle im Raster — die
+   Videoliste liegt deshalb als eigene Zeile unter dem ganzen Raster. */
+.resource-link.is-videogroup {
+  cursor: pointer;
+  position: relative;
+  font: inherit;
+  text-align: left;
+}
 /* Play-Dreieck auf dem Vorschaubild — so liest sich die Karte als Video. */
-.resource-videogroup > summary.has-thumb::after {
+.resource-link.is-videogroup.has-thumb::after {
   content: "";
   position: absolute;
   /* Mitte des Vorschaubilds: Innenabstand oben plus halbe Bildhöhe. */
-  top: calc(.45rem + 2.25rem);
+  top: calc(.55rem + 2.25rem);
   left: 50%;
   z-index: 1;
   width: 0;
@@ -860,29 +888,19 @@ button, .link-btn {
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .55));
   pointer-events: none;
 }
-.resource-videogroup[open] > summary {
+.resource-link.is-videogroup.is-open {
   border-color: var(--accent);
 }
 /* Solange Vorschaubilder da sind, braucht die Karte keine Beschriftung — der
    Stapel und das Play-Dreieck sagen es. Fällt die Vorschau aus, nimmt has-thumb
    die Klasse weg und der Text erscheint wieder. */
-.resource-videogroup > summary.has-thumb .resource-link-label {
+.resource-link.is-videogroup.has-thumb .resource-link-label {
   position: absolute;
   width: 1px;
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-/* Im aufgeklappten Zustand stehen die einzelnen Videokarten unter der Gruppe
-   und dürfen die volle Breite der Blase nutzen. */
-.resource-videolist {
-  display: none;
-  width: 100%;
-  margin-top: .5rem;
-}
-.resource-videogroup[open] .resource-videolist {
-  display: flex;
 }
 
 /* Seitensymbol links oben in der Karte — für Links ohne Vorschaubild. */

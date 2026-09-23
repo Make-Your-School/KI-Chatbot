@@ -309,6 +309,31 @@ const appendHostChip = (node, href) => {
   node.appendChild(host);
 };
 
+// Sternchen als Auszeichnung — aber nicht mitten im Wort.
+//
+// Diese Anwendung schreibt konsequent "Schüler*innen", "Mentor*in", "eine*n".
+// Mit der üblichen Markdown-Regel wird daraus Unsinn: in "hol dir eine*n
+// Mentor*in" öffnet das Sternchen nach "eine" eine Kursivstelle und das nach
+// "Mentor" schließt sie wieder. Auf dem Bildschirm stand dann "eine*n Mentor*in"
+// mit kursivem "n Mentor" — genau in dem Satz, der am häufigsten vorkommt.
+//
+// Die Lösung ist eine Regel, die es in CommonMark so nicht gibt: ein Sternchen
+// leitet nur dann eine Auszeichnung ein, wenn links davon kein Buchstabe und
+// keine Ziffer steht, und beendet sie nur, wenn rechts davon keiner steht. Ein
+// Sternchen zwischen zwei Wortzeichen ist damit immer ein Gendersternchen.
+//
+// "*wichtig*" und "**fett**" funktionieren weiterhin, weil dort links ein
+// Leerzeichen oder der Zeilenanfang steht und rechts ein Satzzeichen oder das
+// Zeilenende.
+//
+// \p{L} statt [A-Za-zÄÖÜäöü]: deckt auch é, ß und alles andere ab, was in
+// deutschen Texten und Bauteilnamen vorkommt.
+const WORD = "[\\p{L}\\p{N}]";
+const EMPHASIS_RE = {
+  strong: new RegExp(`(?<!${WORD})\\*\\*([^*]+)\\*\\*(?!${WORD})`, "gu"),
+  em: new RegExp(`(?<!${WORD})\\*([^*]+)\\*(?!${WORD})`, "gu"),
+};
+
 const renderInlineMarkdown = (text) => {
   const linkTokens = [];
   const withTokens = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => {
@@ -323,8 +348,8 @@ const renderInlineMarkdown = (text) => {
 
   let html = escapeHtml(withTokens);
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(EMPHASIS_RE.strong, "<strong>$1</strong>");
+  html = html.replace(EMPHASIS_RE.em, "<em>$1</em>");
 
   for (let i = 0; i < linkTokens.length; i += 1) {
     html = html.replace(`__LINK_${i}__`, linkTokens[i]);
@@ -670,38 +695,48 @@ const makeResourceLink = (resource, safeHref) => {
   return link;
 };
 
-// A card that opens into the other cards.
+// Eine Karte, die die übrigen Videokarten ein- und ausblendet.
 //
-// <summary> is the closed state and carries the first video's thumbnail, so the
-// group reads as "videos live here" at a glance. The open state replaces it with
-// the real cards — a stack of video cards, not a bullet list of links.
-const makeVideoGroup = (videos) => {
-  const box = document.createElement("details");
-  box.className = "resource-videogroup";
-
-  const summary = document.createElement("summary");
-  summary.className = "resource-link is-videogroup";
-  // Kein sichtbarer Text: Stapel plus Play-Dreieck sagen schon "hier sind
-  // mehrere Videos". Für Screenreader und für den Fall, dass die Vorschaubilder
-  // nicht laden, braucht es die Beschriftung trotzdem — also unsichtbar, und
-  // sie wird sichtbar, sobald kein Bild mehr da ist.
-  summary.setAttribute("aria-label", `${videos.length} Videos ansehen`);
+// Bewusst KEIN <details>: dessen Inhalt liegt im selben Kasten wie die Karte,
+// und sobald er aufklappt, wächst der Kasten und schiebt die Karte an eine
+// andere Stelle. Stattdessen ist die Karte ein Knopf im Kartenraster und die
+// Videoliste eine eigene Zeile darunter — die Karte bleibt beim Klicken liegen,
+// wo sie ist.
+//
+// Der Stapel plus Play-Dreieck sagt schon "hier sind mehrere Videos", deshalb
+// ohne sichtbaren Text. Für Screenreader steht die Beschriftung im aria-label,
+// und sie wird wieder sichtbar, falls die Vorschaubilder nicht laden.
+const makeVideoGroup = (videos, list) => {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "resource-link is-videogroup";
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-label", `${videos.length} Videos anzeigen`);
 
   const title = document.createElement("span");
   title.className = "resource-link-label";
   title.textContent = `${videos.length} Videos`;
-  summary.appendChild(title);
+  button.appendChild(title);
 
-  attachThumbStack(summary, videos.map((entry) => entry.resource?.image));
-  box.appendChild(summary);
+  attachThumbStack(button, videos.map((entry) => entry.resource?.image));
 
-  const inner = document.createElement("div");
-  inner.className = "resource-list resource-videolist";
+  const panel = document.createElement("div");
+  panel.className = "resource-list resource-videolist";
+  panel.hidden = true;
   for (const entry of videos) {
-    inner.appendChild(makeResourceLink(entry.resource, entry.safeHref));
+    panel.appendChild(makeResourceLink(entry.resource, entry.safeHref));
   }
-  box.appendChild(inner);
-  return box;
+
+  button.addEventListener("click", () => {
+    const open = panel.hidden;
+    panel.hidden = !open;
+    button.classList.toggle("is-open", open);
+    button.setAttribute("aria-expanded", String(open));
+    button.setAttribute("aria-label", `${videos.length} Videos ${open ? "ausblenden" : "anzeigen"}`);
+  });
+
+  list.appendChild(button);
+  return panel;
 };
 
 const makeResourcesBlock = (resources) => {
@@ -735,14 +770,18 @@ const makeResourcesBlock = (resources) => {
   // Arduino boards bring along. So from two on they collapse into one card that
   // looks like the others and opens the rest when clicked, rather than into a
   // thin text toggle that reads like a footnote next to the picture cards.
+  let videoPanel = null;
   if (videos.length === 1) {
     list.appendChild(makeResourceLink(videos[0].resource, videos[0].safeHref));
   } else if (videos.length > 1) {
-    list.appendChild(makeVideoGroup(videos));
+    videoPanel = makeVideoGroup(videos, list);
   }
 
   if (!list.childNodes.length) return null;
   wrap.appendChild(list);
+  // Eigene Zeile unter dem Raster, damit das Aufklappen die Karten darüber
+  // nicht verschiebt.
+  if (videoPanel) wrap.appendChild(videoPanel);
   return wrap;
 };
 

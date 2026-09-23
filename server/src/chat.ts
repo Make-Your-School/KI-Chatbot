@@ -106,7 +106,10 @@ const MAX_MESSAGE_CHARS = 4000;
 const MAX_SOURCE_HINTS = 3;
 const MAX_IMAGES = 2;
 const MAX_FOCUSED_REPOS = 2;
-const MAX_RESOURCE_LINKS = 4;
+// Ohne Videos, die zaehlen getrennt. Zwei Bauteile belegen davon schon zwei
+// Plaetze — mit 4 fiel die Herstellerseite hinten runter, sobald Repo, Repo,
+// Doku und Produktseite davor lagen.
+const MAX_RESOURCE_LINKS = 5;
 const MAX_VIDEO_LINKS = 6;
 export const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const MATERIAL_NUMBER_RE = /\bmaterial(?:karte)?(?:\s*(?:nr\.?|nummer))?\s*#?\s*(\d{1,4})\b/i;
@@ -431,6 +434,15 @@ const extractResources = (
     const url = normalizeResourceUrl(rawUrl.trim());
     if (!/^https?:\/\//i.test(url)) return;
     if (seen.has(url)) return;
+
+    // Eine Datei INNERHALB eines Repos, das schon eine eigene Karte hat, ist
+    // keine zweite Anlaufstelle — sie fuehrt an dieselbe Stelle. Frueher stand
+    // deshalb neben "Arduino UNO R4 WiFi" noch eine Karte "README / Doku", die
+    // in genau dieses Repo zeigte, nur ohne Bild und ohne sichtbaren Bezug.
+    for (const repoUrl of seededRepos.keys()) {
+      if (url !== repoUrl && url.startsWith(`${repoUrl}/`)) return;
+    }
+
     seen.add(url);
     const seeded = seededRepos.get(url);
     const known = seeded ?? repoByUrl.get(url);
