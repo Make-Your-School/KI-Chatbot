@@ -689,15 +689,22 @@ export const repoCoverImage = (repo: string): string | null => {
 export type RepoFacts = {
   repo: string;
   title?: string;
+  /** Kurzbeschreibung, oft praeziser als title ("Arduino UNO R3" statt "Arduino UNO"). */
+  shortDescr?: string;
   /** recommend | advanced | expert — die Leiter aus dem Frontmatter. */
   difficulty?: string;
   /** active | deprecated | EOL. */
   status?: string;
   materialNumber?: string;
+  /** Adresse des Repos auf GitHub. */
+  repoUrl?: string;
+  /** Titelbild des Bauteils. */
+  imageUrl?: string;
 };
 
 const FACT_KEYS = [
   ["title", "title"],
+  ["material_short_descr", "shortDescr"],
   ["difficulty", "difficulty"],
   ["status", "status"],
   ["material_number", "materialNumber"],
@@ -709,15 +716,19 @@ export const repoFacts = (repo: string): RepoFacts | null => {
   try {
     const row = handle
       .query(
-        `SELECT text FROM chunks
+        `SELECT text, repo_url AS repoUrl FROM chunks
          WHERE repo = ? AND text LIKE 'Dokument-Metadaten%'
          ORDER BY length(path), path
          LIMIT 1`
       )
-      .get(repo) as { text?: string } | undefined;
+      .get(repo) as { text?: string; repoUrl?: string } | undefined;
     if (!row?.text) return null;
 
-    const facts: RepoFacts = { repo };
+    const facts: RepoFacts = {
+      repo,
+      repoUrl: row.repoUrl || undefined,
+      imageUrl: repoCoverImage(repo) ?? undefined,
+    };
     for (const [key, field] of FACT_KEYS) {
       const match = row.text.match(new RegExp(`^${key}:\\s*["']?(.+?)["']?\\s*$`, "m"));
       const value = match?.[1]?.trim();
@@ -726,5 +737,32 @@ export const repoFacts = (repo: string): RepoFacts | null => {
     return facts;
   } catch {
     return null;
+  }
+};
+
+/**
+ * Alle externen Adressen, die in den eingebetteten Repos verlinkt sind.
+ *
+ * Dient als Erlaubnisliste fuer die Link-Vorschauen: der Server holt nur
+ * Seiten, die ohnehin schon in der Projektdokumentation stehen. Ohne diese
+ * Liste waere der Vorschau-Endpunkt ein offener Abrufdienst, mit dem sich von
+ * aussen beliebige Adressen ueber diesen Server aufrufen liessen.
+ */
+export const listLinkUrls = (): string[] => {
+  const handle = openDb();
+  if (!handle) return [];
+  try {
+    const rows = handle
+      .query("SELECT text FROM chunks WHERE text LIKE 'Hilfreiche Links%'")
+      .all() as Array<{ text: string }>;
+    const urls = new Set<string>();
+    for (const row of rows) {
+      for (const match of row.text.matchAll(/https?:\/\/[^\s<>")]+/g)) {
+        urls.add(match[0].replace(/[.,;:]+$/, ""));
+      }
+    }
+    return [...urls];
+  } catch {
+    return [];
   }
 };

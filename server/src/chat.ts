@@ -11,6 +11,7 @@
 // einheitlich. Bei Fehler/Timeout/4xx eines Versuchs wird der nächste probiert.
 
 import { config } from "./config.ts";
+import { previewId } from "./linkPreviews.ts";
 import { debugContentLog, debugLog } from "./debug.ts";
 import { getModels, type Provider } from "./models.ts";
 import {
@@ -387,8 +388,9 @@ const extractResources = (
     imageUrl?: string;
     path: string;
   }>,
-  repoLinkLimit = 1
+  focusedRepos: string[] = []
 ): ResourceLink[] => {
+  const repoLinkLimit = Math.max(1, focusedRepos.length);
   const all: Array<ResourceLink & { order: number }> = [];
   const seen = new Set<string>();
   let order = 0;
@@ -406,25 +408,55 @@ const extractResources = (
     repoByUrl.set(key, { repo: chunk.repo, image: coverImage(chunk.repo) ?? chunk.imageUrl });
   }
 
+  // Die Repo-Karte wird aus den Repo-Daten gebaut, nicht aus dem gefundenen
+  // Text. Ob der Links-Block eines Repos zufaellig mit abgerufen wurde, ist
+  // Glueckssache — die Karte soll trotzdem erscheinen, mit Bild und mit dem
+  // Namen des Bauteils statt einem blossen "GitHub-Repo".
+  const seededRepos = new Map<string, { label: string; image?: string; repo: string }>();
+  for (const repo of focusedRepos) {
+    const facts = repoFacts(repo);
+    if (!facts?.repoUrl) continue;
+    seededRepos.set(normalizeResourceUrl(facts.repoUrl), {
+      // material_short_descr unterscheidet die beiden Boards ("Arduino UNO R3"
+      // gegen "Arduino UNO R4 WiFi"), title tut das nicht.
+      label: facts.shortDescr ?? facts.title ?? repo,
+      image: facts.imageUrl,
+      repo,
+    });
+  }
+
   const addResource = (label: string, rawUrl: string): void => {
     const url = normalizeResourceUrl(rawUrl.trim());
     if (!/^https?:\/\//i.test(url)) return;
     if (seen.has(url)) return;
     seen.add(url);
-    const known = repoByUrl.get(url);
+    const seeded = seededRepos.get(url);
+    const known = seeded ?? repoByUrl.get(url);
     // Zeigt die URL auf ein Repo aus dem Kontext, ist es eines — egal wie das
     // Label lautet. Das ist verlaesslicher als das Raten am Text.
     const kind = known ? "repo" : classifyResourceKind(label, url);
     all.push({
-      label,
+      // Bei einem Fokus-Repo gewinnt der Name des Bauteils ueber das, was
+      // zufaellig im Text als Linktext stand.
+      label: seeded?.label ?? label,
       url,
       kind,
-      image: known ? known.image : kind === "video" ? videoThumbPath(url) : undefined,
+      image: known
+        ? known.image
+        : kind === "video"
+          ? videoThumbPath(url)
+          // Alles Uebrige — Produktseite, Herstellerseite, Wiki — bekommt die
+          // Vorschau der Seite selbst, sofern sie eine anbietet. Hat sie keine,
+          // antwortet der Endpunkt mit 404 und die Karte bleibt Text.
+          : `/api/link-preview/${previewId(url)}`,
       repo: known?.repo,
       order,
     });
     order += 1;
   };
+
+  // Zuerst die Fokus-Repos, damit sie sicher im Budget landen.
+  for (const [url, seeded] of seededRepos) addResource(seeded.label, url);
 
   for (const chunk of chunks) {
     if (chunk.repoUrl) addResource("GitHub-Repo", chunk.repoUrl);
@@ -805,9 +837,7 @@ export async function* streamChat(
       setupIntent: asksForSetupHelp(lastUser.content),
     });
 
-    const resources = showResources
-      ? extractResources(focusedChunks, focusedRepos.length || 1)
-      : [];
+    const resources = showResources ? extractResources(focusedChunks, focusedRepos) : [];
     if (resources.length > 0) {
       debugLog("chat", "resources emitted", resources);
       yield { type: "resources", resources };

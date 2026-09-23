@@ -120,6 +120,17 @@ export const config = {
     maxBytes: 512_000,
   },
 
+  // Zwischenspeicher fuer Link-Vorschaubilder (og:image fremder Seiten).
+  // Gleiche Ueberlegung wie bei den Video-Vorschaubildern: der Server holt sie,
+  // nicht der Browser der Schueler*in.
+  linkPreviews: {
+    dir: process.env.LINK_PREVIEW_DIR ?? "./data/previews",
+    // Reicht fuer den <head> jeder ueblichen Seite. Groesseres wird verworfen,
+    // statt den Server mit fremden Megabytes zu beschaeftigen.
+    maxHtmlBytes: 1_500_000,
+    maxImageBytes: 1_500_000,
+  },
+
   // Aggregate-only usage counters. Deliberately a separate file from codes.db:
   // wiping statistics must never be able to touch the Schulcodes.
   stats: {

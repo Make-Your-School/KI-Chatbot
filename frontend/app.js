@@ -264,11 +264,21 @@ const mergeResources = (...resourceLists) => {
   return merged;
 };
 
+// Der Server kennt die Links besser als das Modell.
+//
+// Beides zu mischen hat Karten verdoppelt: das Modell schreibt "GitHub-Repo
+// Arduino UNO R4 WiFi" in seinen Text, der Server schickt dieselbe Adresse aus
+// den Repo-Metadaten — mit Bild und geprüfter URL. Zwei Karten fürs selbe Repo,
+// eine davon ohne Bild.
+//
+// Die Links aus dem Text werden weiterhin aus dem Fließtext entfernt (sonst
+// stünde die Liste roh mitten in der Antwort), aber nur noch dann als Karten
+// gezeigt, wenn der Server gar nichts geschickt hat.
 const getAssistantPresentation = (text, resources = []) => {
   const extracted = extractTextResources(text || "");
   return {
     content: extracted.content,
-    resources: mergeResources(extracted.resources, resources),
+    resources: resources.length > 0 ? resources : extracted.resources,
   };
 };
 
@@ -642,16 +652,16 @@ const makeVideoGroup = (videos) => {
 
   const summary = document.createElement("summary");
   summary.className = "resource-link is-videogroup";
+  // Kein sichtbarer Text: Stapel plus Play-Dreieck sagen schon "hier sind
+  // mehrere Videos". Für Screenreader und für den Fall, dass die Vorschaubilder
+  // nicht laden, braucht es die Beschriftung trotzdem — also unsichtbar, und
+  // sie wird sichtbar, sobald kein Bild mehr da ist.
+  summary.setAttribute("aria-label", `${videos.length} Videos ansehen`);
 
   const title = document.createElement("span");
   title.className = "resource-link-label";
   title.textContent = `${videos.length} Videos`;
   summary.appendChild(title);
-
-  const hint = document.createElement("span");
-  hint.className = "resource-link-host";
-  hint.textContent = "zum Ansehen aufklappen";
-  summary.appendChild(hint);
 
   attachThumbStack(summary, videos.map((entry) => entry.resource?.image));
   box.appendChild(summary);

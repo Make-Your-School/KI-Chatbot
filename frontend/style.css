@@ -863,6 +863,17 @@ button, .link-btn {
 .resource-videogroup[open] > summary {
   border-color: var(--accent);
 }
+/* Solange Vorschaubilder da sind, braucht die Karte keine Beschriftung — der
+   Stapel und das Play-Dreieck sagen es. Fällt die Vorschau aus, nimmt has-thumb
+   die Klasse weg und der Text erscheint wieder. */
+.resource-videogroup > summary.has-thumb .resource-link-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 /* Im aufgeklappten Zustand stehen die einzelnen Videokarten unter der Gruppe
    und dürfen die volle Breite der Blase nutzen. */
 .resource-videolist {
