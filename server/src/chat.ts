@@ -548,10 +548,12 @@ const extractResources = (
 
   const sorted = all.sort((a, b) => {
     // Reihenfolge nach Nutzen waehrend der Hackdays: erst das Bauteil-Repo,
-    // dann die Anleitung, dann Videos. Der Shop steht weit hinten — wer gerade
-    // baut, will nicht wissen, wo man das Teil kaufen kann. Die blosse
-    // Startseite des Herstellers sagt ueber das Bauteil gar nichts.
-    const kindOrder = { repo: 0, doc: 1, video: 2, other: 3, shop: 4, vendor: 5 };
+    // dann die Anleitung, dann Videos. Der Shop steht ganz hinten — wer gerade
+    // baut, will nicht wissen, wo man das Teil kaufen kann. Die Herstellerseite
+    // steht davor: sie ist immerhin eine Infoseite, und wenn sie nur die blosse
+    // Startseite ist, faellt sie weiter unten ohnehin raus, sobald es eine
+    // Anleitung gibt.
+    const kindOrder = { repo: 0, doc: 1, video: 2, other: 3, vendor: 4, shop: 5 };
     return (
       kindOrder[a.kind] - kindOrder[b.kind] ||
       labelPriority(a.label) - labelPriority(b.label) ||
