@@ -20,7 +20,14 @@ import {
   markHealthy,
   markUnhealthy,
 } from "./providerHealth.ts";
-import { retrieve, formatContext, loadFileText, repoCoverImage, type ChunkMatch } from "./rag.ts";
+import {
+  retrieve,
+  formatContext,
+  loadFileText,
+  repoCoverImage,
+  repoFacts,
+  type ChunkMatch,
+} from "./rag.ts";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompts.ts";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -624,6 +631,30 @@ const buildRetrievalQuery = (
  * Arduino an" fiel so der UNO R4 WiFi komplett raus — kein Bild, kein Link —,
  * obwohl die Suche ihn als besten Treffer geliefert hatte.
  */
+/**
+ * Kurzsteckbrief der Bauteile, auf die sich die Antwort stuetzt.
+ *
+ * Wird dem Modell zusaetzlich zum abgerufenen Text mitgegeben, damit ein
+ * Vergleich ueberhaupt moeglich ist: "welches ist einfacher" laesst sich nicht
+ * beantworten, wenn difficulty nur zufaellig im Kontext steht.
+ *
+ * Bewusst knapp — das sind vier Angaben pro Bauteil, kein zweiter Kontextblock.
+ */
+const buildRepoBriefing = (repos: string[]): string => {
+  const lines: string[] = [];
+  for (const repo of repos) {
+    const facts = repoFacts(repo);
+    if (!facts) continue;
+    const parts = [facts.title ?? repo];
+    if (facts.materialNumber) parts.push(`Materialnummer ${facts.materialNumber}`);
+    if (facts.difficulty) parts.push(`Schwierigkeit ${facts.difficulty}`);
+    if (facts.status) parts.push(`Status ${facts.status}`);
+    lines.push(`- ${repo}: ${parts.join(", ")}`);
+  }
+  if (lines.length === 0) return "";
+  return `Eckdaten der Bauteile im Kontext:\n${lines.join("\n")}`;
+};
+
 const pickFocusedRepos = (
   retrievalQuery: string,
   chunks: Array<{ repo: string; match?: ChunkMatch }>
@@ -637,24 +668,52 @@ const pickFocusedRepos = (
 
   const counts = new Map<string, number>();
   const named = new Set<string>();
-  for (const chunk of chunks) {
+  // Wo ein Repo zum ersten Mal auftaucht. chunks kommt in Relevanzreihenfolge
+  // aus retrieve(), das ist die beste Rangfolge, die wir haben.
+  const firstSeen = new Map<string, number>();
+  for (const [index, chunk] of chunks.entries()) {
     counts.set(chunk.repo, (counts.get(chunk.repo) ?? 0) + 1);
+    if (!firstSeen.has(chunk.repo)) firstSeen.set(chunk.repo, index);
     if (chunk.match && chunk.match !== "semantic") named.add(chunk.repo);
   }
 
   const ranked = [...counts.entries()].sort(
-    // Beim Namen genannte Repos zuerst, danach nach Trefferzahl.
+    // Beim Namen genannte Repos zuerst, danach nach Trefferzahl — und bei
+    // Gleichstand nach der Reihenfolge der Suche.
+    //
+    // Frueher stand hier alphabetisch. Das sah harmlos aus, hat aber bei
+    // Gleichstand den besten Treffer verworfen: sind drei Repos genannt und
+    // nur zwei duerfen durch, gewann "Calliope" gegen "mks-Arduino-UNO_R3",
+    // nur weil C vor m kommt.
     (a, b) =>
       Number(named.has(b[0])) - Number(named.has(a[0])) ||
       b[1] - a[1] ||
-      a[0].localeCompare(b[0], "de")
+      (firstSeen.get(a[0]) ?? 0) - (firstSeen.get(b[0]) ?? 0)
   );
   if (chunks.length === 1) return ranked[0] ? [ranked[0][0]] : [];
 
-  return ranked
-    .filter(([repo, count]) => named.has(repo) || count >= 2)
-    .slice(0, MAX_FOCUSED_REPOS)
-    .map(([repo]) => repo);
+  const eligible = ranked.filter(([repo, count]) => named.has(repo) || count >= 2);
+  const top = eligible[0];
+  if (!top) return [];
+
+  // Ein zweites Repo nur, wenn es wirklich gleichrangig ist.
+  //
+  // "Zeig immer bis zu zwei" waere falsch: bei "wie schliesse ich den Taster
+  // an" gibt es genau ein richtiges Bauteil, und ein zweites daneben stiftet
+  // Verwirrung. Bei "wie messe ich Entfernung" gibt es dagegen mehrere
+  // sinnvolle Bauteile, und dann ist die Auswahl die eigentliche Antwort.
+  //
+  // Gleichrangig heisst: derselbe Fundweg. Beide beim Namen genannt, oder beide
+  // nur thematisch gefunden. Ein beim Namen genanntes Bauteil und ein bloss
+  // thematisch passendes sind keine Alternativen zueinander — da ist das
+  // genannte gemeint und das andere Beifang.
+  //
+  // Innerhalb desselben Fundwegs reicht die Huerde von oben. Ueber die
+  // Trefferzahl hinaus noch feiner zu sortieren waere Zahlendreherei: 3 gegen
+  // 2 Chunks sagt nichts darueber, ob zwei Sensoren dieselbe Aufgabe loesen.
+  const rest = eligible.slice(1).filter(([repo]) => named.has(repo) === named.has(top[0]));
+
+  return [top, ...rest].slice(0, MAX_FOCUSED_REPOS).map(([repo]) => repo);
 };
 
 export async function* streamChat(
@@ -689,6 +748,9 @@ export async function* streamChat(
     return [];
   });
   const context = formatContext(chunks);
+  // Wird weiter unten um die Eckdaten der Fokus-Repos ergaenzt, sobald
+  // feststeht, welche das sind.
+  let briefing = "";
 
   debugLog("chat", "context built", {
     chunkCount: chunks.length,
@@ -732,6 +794,8 @@ export async function* streamChat(
       asksForImage(lastUser.content) ||
       (focusedRepos.length > 0 && !asksForCode(lastUser.content));
     const showExample = asksForCode(lastUser.content);
+
+    briefing = buildRepoBriefing(focusedRepos);
 
     debugLog("chat", "supplement selection", {
       focusedRepos,
@@ -788,7 +852,10 @@ export async function* streamChat(
   const messages = [
     { role: "system" as const, content: SYSTEM_PROMPT },
     ...history.slice(0, -1),
-    { role: "user" as const, content: buildUserMessage(lastUser.content, context) },
+    {
+      role: "user" as const,
+      content: buildUserMessage(lastUser.content, briefing ? `${briefing}\n\n${context}` : context),
+    },
   ];
 
   debugLog("chat", "messages built for provider", {

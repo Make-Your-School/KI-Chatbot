@@ -676,3 +676,55 @@ export const repoCoverImage = (repo: string): string | null => {
     return null;
   }
 };
+
+/**
+ * Die Eckdaten eines Bauteils: Name, Schwierigkeit, Status, Materialnummer.
+ *
+ * Wie repoCoverImage() eine Eigenschaft des REPOS, nicht des gefundenen
+ * Textausschnitts. Diese Angaben stehen im YAML-Frontmatter und landen beim
+ * Einbetten in einem eigenen "Dokument-Metadaten"-Chunk. Ob der bei einer Frage
+ * zufaellig mit abgerufen wird, ist Glueckssache — fuer einen Vergleich zweier
+ * Bauteile muessen sie aber sicher da sein.
+ */
+export type RepoFacts = {
+  repo: string;
+  title?: string;
+  /** recommend | advanced | expert — die Leiter aus dem Frontmatter. */
+  difficulty?: string;
+  /** active | deprecated | EOL. */
+  status?: string;
+  materialNumber?: string;
+};
+
+const FACT_KEYS = [
+  ["title", "title"],
+  ["difficulty", "difficulty"],
+  ["status", "status"],
+  ["material_number", "materialNumber"],
+] as const;
+
+export const repoFacts = (repo: string): RepoFacts | null => {
+  const handle = openDb();
+  if (!handle) return null;
+  try {
+    const row = handle
+      .query(
+        `SELECT text FROM chunks
+         WHERE repo = ? AND text LIKE 'Dokument-Metadaten%'
+         ORDER BY length(path), path
+         LIMIT 1`
+      )
+      .get(repo) as { text?: string } | undefined;
+    if (!row?.text) return null;
+
+    const facts: RepoFacts = { repo };
+    for (const [key, field] of FACT_KEYS) {
+      const match = row.text.match(new RegExp(`^${key}:\\s*["']?(.+?)["']?\\s*$`, "m"));
+      const value = match?.[1]?.trim();
+      if (value) facts[field] = value;
+    }
+    return facts;
+  } catch {
+    return null;
+  }
+};
