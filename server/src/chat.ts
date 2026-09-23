@@ -20,7 +20,7 @@ import {
   markHealthy,
   markUnhealthy,
 } from "./providerHealth.ts";
-import { retrieve, formatContext, loadFileText, repoCoverImage } from "./rag.ts";
+import { retrieve, formatContext, loadFileText, repoCoverImage, type ChunkMatch } from "./rag.ts";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompts.ts";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -609,17 +609,24 @@ const buildRetrievalQuery = (
 /**
  * Welche Repos die Antwort wirklich tragen — hoechstens MAX_FOCUSED_REPOS.
  *
- * Mass dafuer ist, wie viele der abgerufenen Chunks aus einem Repo stammen.
- * Ein Repo, das nur mit einem einzigen Chunk vertreten ist, war meistens ein
- * Streifschuss der Bedeutungssuche und soll weder Bild noch Link stellen.
+ * Zwei Wege hinein, und der erste ist der wichtigere:
  *
- * Frueher gab es hier genau ein Repo, und nur wenn es den Zweiten klar
- * schlug. Bei "wie fange ich mit Arduino an" liegen aber R3 und R4 WiFi
- * gleichauf — das war exakt der Fall, in dem die Regel nichts zurueckgab.
+ * 1. Die Person hat das Bauteil genannt. Dann hat die Stichwortsuche oder die
+ *    Materialnummer das Repo gefunden (chunk.match), und ein einziger Treffer
+ *    reicht — er ist ja keiner aus Versehen.
+ * 2. Sonst zaehlt, wie viele Chunks aus dem Repo kommen. Ein einzelner Chunk
+ *    aus der Bedeutungssuche ist meist ein Streifschuss und soll weder Bild
+ *    noch Link stellen.
+ *
+ * Punkt 1 fehlte und hat konkret wehgetan: die Stichwortsuche liefert per
+ * ROW_NUMBER genau EINEN Chunk pro Repo. Ein Repo, das nur ueber sie gefunden
+ * wird, konnte die Zwei-Chunk-Huerde damit nie nehmen. Bei "wie fange ich mit
+ * Arduino an" fiel so der UNO R4 WiFi komplett raus — kein Bild, kein Link —,
+ * obwohl die Suche ihn als besten Treffer geliefert hatte.
  */
 const pickFocusedRepos = (
   retrievalQuery: string,
-  chunks: Array<{ repo: string }>
+  chunks: Array<{ repo: string; match?: ChunkMatch }>
 ): string[] => {
   if (chunks.length === 0) return [];
   // Eine Materialnummer meint genau ein Bauteil, da gibt es nichts zu waehlen.
@@ -629,17 +636,23 @@ const pickFocusedRepos = (
   }
 
   const counts = new Map<string, number>();
+  const named = new Set<string>();
   for (const chunk of chunks) {
     counts.set(chunk.repo, (counts.get(chunk.repo) ?? 0) + 1);
+    if (chunk.match && chunk.match !== "semantic") named.add(chunk.repo);
   }
 
   const ranked = [...counts.entries()].sort(
-    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "de")
+    // Beim Namen genannte Repos zuerst, danach nach Trefferzahl.
+    (a, b) =>
+      Number(named.has(b[0])) - Number(named.has(a[0])) ||
+      b[1] - a[1] ||
+      a[0].localeCompare(b[0], "de")
   );
   if (chunks.length === 1) return ranked[0] ? [ranked[0][0]] : [];
 
   return ranked
-    .filter(([, count]) => count >= 2)
+    .filter(([repo, count]) => named.has(repo) || count >= 2)
     .slice(0, MAX_FOCUSED_REPOS)
     .map(([repo]) => repo);
 };

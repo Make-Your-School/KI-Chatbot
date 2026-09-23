@@ -32,6 +32,17 @@ const openDb = (): Database | null => {
   return db;
 };
 
+/**
+ * Wodurch ein Chunk gefunden wurde.
+ *
+ * Wichtig fuer den Aufrufer: "exact" und "keyword" heissen, dass die Person das
+ * Bauteil beim Namen oder bei der Materialnummer genannt hat. "semantic" heisst
+ * nur "passt thematisch irgendwie". Ohne diese Unterscheidung muss man aus der
+ * Trefferzahl raten, wie wichtig ein Repo ist — und dabei verliert genau das
+ * Repo, das die Stichwortsuche mit einem einzigen, sehr guten Treffer liefert.
+ */
+export type ChunkMatch = "exact" | "focused" | "keyword" | "semantic";
+
 export type Chunk = {
   repo: string;
   path: string;
@@ -40,6 +51,7 @@ export type Chunk = {
   imageUrl?: string;
   text: string;
   distance: number;
+  match: ChunkMatch;
 };
 
 const LEGACY_GITHUB_ORG = "Make-Your-School";
@@ -395,6 +407,10 @@ const queryLegacySemanticRows = (
     )
     .all(vecBuf, limit) as Array<Omit<Chunk, "repoUrl" | "sourceUrl" | "imageUrl">>;
 
+/** Haengt an jede Zeile dran, aus welcher Suche sie stammt. */
+const tagMatch = <T>(rows: T[], match: ChunkMatch): Array<T & { match: ChunkMatch }> =>
+  rows.map(row => ({ ...row, match }));
+
 const mergeChunks = (limit: number, ...chunkSets: Chunk[][]): Chunk[] => {
   const merged: Chunk[] = [];
   const seen = new Set<string>();
@@ -475,18 +491,22 @@ export const retrieve = async (
   });
 
   try {
-    const exactRows = materialNumber
-      ? queryMaterialNumberRows(handle, materialNumber)
-      : [];
+    const exactRows = tagMatch(
+      materialNumber ? queryMaterialNumberRows(handle, materialNumber) : [],
+      "exact"
+    );
     const repoFocus = deriveRepoFocus(exactRows);
-    const focusedRows = repoFocus
-      ? queryRepoFocusedRows(handle, repoFocus.repo, repoFocus.readmePath, repoFocus.examplePath, k)
-      : [];
-    const keywordRows = queryKeywordRows(handle, searchTerms, keywordBudget(k));
+    const focusedRows = tagMatch(
+      repoFocus
+        ? queryRepoFocusedRows(handle, repoFocus.repo, repoFocus.readmePath, repoFocus.examplePath, k)
+        : [],
+      "focused"
+    );
+    const keywordRows = tagMatch(queryKeywordRows(handle, searchTerms, keywordBudget(k)), "keyword");
 
     let rows: Chunk[] = [];
     try {
-      rows = querySemanticRows(handle, vecBuf, k);
+      rows = tagMatch(querySemanticRows(handle, vecBuf, k), "semantic");
     } catch (semanticErr) {
       const message = (semanticErr as Error).message;
       if (message.includes("repo_url") || message.includes("source_url") || message.includes("image_url")) {
@@ -540,19 +560,19 @@ export const retrieve = async (
 
       const merged = mergeChunks(
         k,
-        exactRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        focusedRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        keywordRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        rows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined }))
+        exactRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "exact" as ChunkMatch })),
+        focusedRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "focused" as ChunkMatch })),
+        keywordRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "keyword" as ChunkMatch })),
+        rows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "semantic" as ChunkMatch }))
       );
       logRetrieveResult(
         query,
         materialNumber,
         searchTerms,
-        exactRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        focusedRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        keywordRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
-        rows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined })),
+        exactRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "exact" as ChunkMatch })),
+        focusedRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "focused" as ChunkMatch })),
+        keywordRows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "keyword" as ChunkMatch })),
+        rows.map(row => ({ ...row, repoUrl: legacyRepoUrl(row.repo), imageUrl: undefined, match: "semantic" as ChunkMatch })),
         merged,
         true
       );
