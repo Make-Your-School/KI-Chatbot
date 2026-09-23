@@ -577,12 +577,18 @@ const makeResourcesBlock = (resources) => {
   return wrap;
 };
 
+// Collapsed by default.
+//
+// This list is honesty, not navigation: it says which files the answer was
+// built from. Retrieval always returns a fixed number of chunks, so a few of
+// them are near-misses the model never used — and five long repo paths under
+// every answer buried the two or three links that are actually worth clicking.
+// Folding it away keeps the receipt without letting it shout.
 const makeSourcesBlock = (sources) => {
   if (!sources || sources.length === 0) return null;
-  const wrap = document.createElement("div");
+  const wrap = document.createElement("details");
   wrap.className = "sources";
-  const label = document.createElement("strong");
-  label.textContent = "Grundlage der Antwort:";
+  const label = document.createElement("summary");
   wrap.appendChild(label);
   const list = document.createElement("div");
   list.className = "resource-list";
@@ -622,34 +628,81 @@ const makeSourcesBlock = (sources) => {
   }
 
   if (!list.childNodes.length) return null;
+  const count = list.childNodes.length;
+  label.textContent = `Grundlage der Antwort (${count} ${count === 1 ? "Datei" : "Dateien"})`;
   wrap.appendChild(list);
   return wrap;
 };
 
-const makeImageBlock = (image) => {
-  if (!image || typeof image.url !== "string") return null;
-  const safeHref = safeUrl(image.url);
-  if (!safeHref) return null;
+// Older histories in localStorage carry a single `image`; new ones carry
+// `images`. Reading both means a tab that was open across the deploy keeps its
+// pictures instead of silently losing them.
+const imageList = (msg) => {
+  if (Array.isArray(msg?.images)) return msg.images;
+  return msg?.image ? [msg.image] : [];
+};
+
+// A repo name is a poor alt text for a screen reader. The part is what the
+// picture actually shows, and it is the last path segment of the repo name:
+// "mks-Arduino-UNO_R3" -> "Arduino UNO_R3".
+const partNameFromRepo = (repo) =>
+  String(repo || "")
+    .replace(/^m(?:ks|ys)[-_]/i, "")
+    // "generic" is the placeholder for "no particular manufacturer" — it names
+    // nothing and only makes the caption longer.
+    .replace(/^generic[-_]/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+
+const makeImagesBlock = (images) => {
+  const list = Array.isArray(images) ? images : [];
+  if (list.length === 0) return null;
 
   const wrap = document.createElement("div");
-  wrap.className = "answer-image";
+  wrap.className = "answer-images";
 
-  const link = document.createElement("a");
-  link.href = safeHref;
-  link.target = "_blank";
-  link.rel = "noreferrer";
+  let shown = 0;
+  for (const image of list.slice(0, 2)) {
+    const safeHref = safeUrl(image?.url || "");
+    if (!safeHref) continue;
 
-  const img = document.createElement("img");
-  img.alt = `Bild aus ${image.repo}/${image.path}`;
-  img.loading = "lazy";
-  img.decoding = "async";
-  // Raw URLs go stale (file renamed, repo gone private, branch called master).
-  // Without this the bubble shows a broken-image icon instead of nothing.
-  img.addEventListener("error", () => wrap.remove());
-  img.src = safeHref;
+    const figure = document.createElement("figure");
+    figure.className = "answer-image";
 
-  link.appendChild(img);
-  wrap.appendChild(link);
+    const link = document.createElement("a");
+    link.href = safeHref;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+
+    const img = document.createElement("img");
+    const part = partNameFromRepo(image.repo);
+    img.alt = part ? `Foto: ${part}` : `Bild aus ${image.repo}/${image.path}`;
+    img.loading = "lazy";
+    img.decoding = "async";
+    // Raw URLs go stale (file renamed, repo gone private, branch called master).
+    // Without this the bubble shows a broken-image icon instead of nothing.
+    // Only this one picture disappears — a second, working one stays.
+    img.addEventListener("error", () => figure.remove());
+    img.src = safeHref;
+
+    link.appendChild(img);
+    figure.appendChild(link);
+
+    // Two pictures without labels are a riddle, not an answer: the whole point
+    // of showing both boards is being able to tell which one is which.
+    if (list.length > 1 && part) {
+      figure.appendChild(Object.assign(document.createElement("figcaption"), {
+        className: "answer-image-caption",
+        textContent: part,
+      }));
+    }
+
+    wrap.appendChild(figure);
+    shown += 1;
+  }
+
+  if (shown === 0) return null;
+  wrap.classList.toggle("is-pair", shown > 1);
   return wrap;
 };
 
@@ -745,8 +798,8 @@ const renderAll = () => {
       : { content: msg.content, resources: msg.resources };
     const bubble = makeBubble(msg.role, presentation.content);
     if (msg.role === "assistant") {
-      const image = makeImageBlock(msg.image);
-      if (image) bubble.appendChild(image);
+      const images = makeImagesBlock(imageList(msg));
+      if (images) bubble.appendChild(images);
       const example = makeExampleBlock(msg.example);
       if (example) bubble.appendChild(example);
       const resources = makeResourcesBlock(presentation.resources);
@@ -847,7 +900,7 @@ const sendMessage = async (text) => {
   let assistantText = "";
   let sources = [];
   let resources = [];
-  let image = null;
+  let images = [];
   let example = null;
   let modelMeta = null; // { provider, model } once received
 
@@ -911,8 +964,8 @@ const sendMessage = async (text) => {
           sources = event.sources;
         } else if (event.type === "resources") {
           resources = event.resources;
-        } else if (event.type === "image") {
-          image = event.image || null;
+        } else if (event.type === "images") {
+          images = Array.isArray(event.images) ? event.images : [];
         } else if (event.type === "example") {
           example = event.example || null;
         } else if (event.type === "model") {
@@ -940,14 +993,14 @@ const sendMessage = async (text) => {
         role: "assistant",
         content: assistantText,
         meta: modelMeta || undefined,
-        image: image || undefined,
+        images: images.length > 0 ? images : undefined,
         example: example || undefined,
         resources: resources.length > 0 ? resources : undefined,
         sources: sources.length > 0 ? sources : undefined,
       });
       saveHistory(history);
       if (assistantBubble) {
-        const imageBlock = makeImageBlock(image);
+        const imageBlock = makeImagesBlock(images);
         if (imageBlock) assistantBubble.appendChild(imageBlock);
         const exampleBlock = makeExampleBlock(example);
         if (exampleBlock) assistantBubble.appendChild(exampleBlock);

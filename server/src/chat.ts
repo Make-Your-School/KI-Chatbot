@@ -47,7 +47,7 @@ type ExampleHint = {
 
 type HistoryMessage = ChatMessage & {
   sources?: SourceHint[];
-  image?: ImageHint;
+  images?: ImageHint[];
   example?: ExampleHint;
 };
 
@@ -81,7 +81,7 @@ export type ChatStreamEvent =
       }>;
     }
   | { type: "resources"; resources: ResourceLink[] }
-  | { type: "image"; image: { url: string; repo: string; path: string } }
+  | { type: "images"; images: Array<{ url: string; repo: string; path: string }> }
   | { type: "example"; example: ExampleCode }
   | { type: "model"; provider: Provider; model: string }
   | { type: "done" }
@@ -90,6 +90,9 @@ export type ChatStreamEvent =
 const MAX_HISTORY = 20; // cap how much we forward to avoid prompt bloat
 const MAX_MESSAGE_CHARS = 4000;
 const MAX_SOURCE_HINTS = 3;
+const MAX_IMAGES = 2;
+const MAX_FOCUSED_REPOS = 2;
+const MAX_RESOURCE_LINKS = 4;
 const MATERIAL_NUMBER_RE = /\bmaterial(?:karte)?(?:\s*(?:nr\.?|nummer))?\s*#?\s*(\d{1,4})\b/i;
 const CODE_INTENT_RE = /\b(code|quellcode|sketch|programm|ino|beispielcode)\b/i;
 const LINK_INTENT_RE = /\b(link|links|repo|github|readme|doku|dokumentation|video|anleitung)\b/i;
@@ -188,7 +191,9 @@ const sanitizeStructuredHistory = (history: ChatMessage[]): HistoryMessage[] =>
     )
     .slice(-MAX_HISTORY)
     .map(m => {
-      const structured = m as HistoryMessage;
+      // `image` (Einzahl) ist das alte Feld und steht absichtlich nicht mehr im
+      // Typ — nur der Migrationspfad unten darf es noch lesen.
+      const structured = m as HistoryMessage & { image?: ImageHint };
       const sources = Array.isArray(structured.sources)
         ? structured.sources
             .filter(source => source && typeof source.repo === "string" && typeof source.path === "string")
@@ -201,17 +206,24 @@ const sanitizeStructuredHistory = (history: ChatMessage[]): HistoryMessage[] =>
               imageUrl: typeof source.imageUrl === "string" ? source.imageUrl : undefined,
             }))
         : undefined;
-      const image =
-        structured.image &&
-        typeof structured.image.url === "string" &&
-        typeof structured.image.repo === "string" &&
-        typeof structured.image.path === "string"
-          ? {
-              url: structured.image.url,
-              repo: structured.image.repo,
-              path: structured.image.path,
-            }
-          : undefined;
+      // Der Client schickt seit dem Mehrbild-Umbau `images`. Aeltere Verlaeufe
+      // liegen als `image` im localStorage der Schueler*innen und muessen
+      // weiter lesbar sein — sonst verliert ein offener Tab seinen Kontext.
+      const rawImages: unknown[] = Array.isArray(structured.images)
+        ? structured.images
+        : structured.image
+          ? [structured.image]
+          : [];
+      const images = rawImages
+        .filter(
+          (img): img is ImageHint =>
+            !!img &&
+            typeof (img as ImageHint).url === "string" &&
+            typeof (img as ImageHint).repo === "string" &&
+            typeof (img as ImageHint).path === "string"
+        )
+        .slice(0, MAX_IMAGES)
+        .map(img => ({ url: img.url, repo: img.repo, path: img.path }));
       const example =
         structured.example &&
         typeof structured.example.repo === "string" &&
@@ -230,7 +242,7 @@ const sanitizeStructuredHistory = (history: ChatMessage[]): HistoryMessage[] =>
         role: m.role,
         content: m.content.slice(0, MAX_MESSAGE_CHARS),
         sources,
-        image,
+        images,
         example,
       };
     });
@@ -238,15 +250,28 @@ const sanitizeStructuredHistory = (history: ChatMessage[]): HistoryMessage[] =>
 const sanitizeHistory = (history: ChatMessage[]): ChatMessage[] =>
   sanitizeStructuredHistory(history).map(({ role, content }) => ({ role, content }));
 
-const pickBestImage = (
+/**
+ * Ein Bild pro Repo, hoechstens MAX_IMAGES.
+ *
+ * Zwei sind kein Selbstzweck: den Arduino gibt es als UNO R3 und als UNO R4
+ * WiFi, und die Frage "welchen hast du denn?" beantwortet man am schnellsten,
+ * indem man beide nebeneinander sieht. Mehr als zwei waere eine Galerie und
+ * keine Hilfe mehr.
+ */
+const pickImages = (
   chunks: Array<{ imageUrl?: string; repo: string; path: string }>
-): { url: string; repo: string; path: string } | null => {
+): Array<{ url: string; repo: string; path: string }> => {
+  const out: Array<{ url: string; repo: string; path: string }> = [];
+  const seenRepos = new Set<string>();
+
   for (const chunk of chunks) {
-    if (typeof chunk.imageUrl === "string" && chunk.imageUrl.length > 0) {
-      return { url: chunk.imageUrl, repo: chunk.repo, path: chunk.path };
-    }
+    if (typeof chunk.imageUrl !== "string" || chunk.imageUrl.length === 0) continue;
+    if (seenRepos.has(chunk.repo)) continue;
+    seenRepos.add(chunk.repo);
+    out.push({ url: chunk.imageUrl, repo: chunk.repo, path: chunk.path });
+    if (out.length >= MAX_IMAGES) break;
   }
-  return null;
+  return out;
 };
 
 const normalizeResourceUrl = (url: string): string => url.replace(/\.git$/, "");
@@ -290,7 +315,8 @@ const labelPriority = (label: string): number => {
 };
 
 const extractResources = (
-  chunks: Array<{ text: string; repoUrl?: string; sourceUrl?: string; path: string }>
+  chunks: Array<{ text: string; repoUrl?: string; sourceUrl?: string; path: string }>,
+  repoLinkLimit = 1
 ): ResourceLink[] => {
   const all: Array<ResourceLink & { order: number }> = [];
   const seen = new Set<string>();
@@ -326,8 +352,12 @@ const extractResources = (
     );
   });
 
+  // Ein Repo-Link pro Repo, auf das sich die Antwort stuetzt — bei den zwei
+  // Arduino-Varianten sind das zwei, sonst einer. Alles andere bleibt bei
+  // einem: die Karte soll "hier klickst du weiter" sagen, nicht "hier sind
+  // alle Links, die ich finden konnte".
   const perKindLimit: Record<ResourceKind, number> = {
-    repo: 1,
+    repo: Math.max(1, Math.min(repoLinkLimit, MAX_FOCUSED_REPOS)),
     doc: 1,
     video: 1,
     product: 1,
@@ -346,7 +376,7 @@ const extractResources = (
     if (used[resource.kind] >= perKindLimit[resource.kind]) continue;
     selected.push({ label: resource.label, url: resource.url, kind: resource.kind });
     used[resource.kind] += 1;
-    if (selected.length >= 5) break;
+    if (selected.length >= MAX_RESOURCE_LINKS) break;
   }
 
   return selected;
@@ -455,9 +485,7 @@ const buildRetrievalQuery = (
     previousAssistant?.example
       ? `${previousAssistant.example.repo}/${previousAssistant.example.path}`
       : null,
-    previousAssistant?.image
-      ? `${previousAssistant.image.repo}/${previousAssistant.image.path}`
-      : null,
+    ...(previousAssistant?.images?.map(image => `${image.repo}/${image.path}`) ?? []),
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .filter((value, index, array) => array.indexOf(value) === index)
@@ -478,12 +506,27 @@ const buildRetrievalQuery = (
   };
 };
 
-const pickFocusedRepo = (
+/**
+ * Welche Repos die Antwort wirklich tragen — hoechstens MAX_FOCUSED_REPOS.
+ *
+ * Mass dafuer ist, wie viele der abgerufenen Chunks aus einem Repo stammen.
+ * Ein Repo, das nur mit einem einzigen Chunk vertreten ist, war meistens ein
+ * Streifschuss der Bedeutungssuche und soll weder Bild noch Link stellen.
+ *
+ * Frueher gab es hier genau ein Repo, und nur wenn es den Zweiten klar
+ * schlug. Bei "wie fange ich mit Arduino an" liegen aber R3 und R4 WiFi
+ * gleichauf — das war exakt der Fall, in dem die Regel nichts zurueckgab.
+ */
+const pickFocusedRepos = (
   retrievalQuery: string,
   chunks: Array<{ repo: string }>
-): string | null => {
-  if (chunks.length === 0) return null;
-  if (extractMaterialNumber(retrievalQuery)) return chunks[0]?.repo ?? null;
+): string[] => {
+  if (chunks.length === 0) return [];
+  // Eine Materialnummer meint genau ein Bauteil, da gibt es nichts zu waehlen.
+  if (extractMaterialNumber(retrievalQuery)) {
+    const first = chunks[0]?.repo;
+    return first ? [first] : [];
+  }
 
   const counts = new Map<string, number>();
   for (const chunk of chunks) {
@@ -493,12 +536,12 @@ const pickFocusedRepo = (
   const ranked = [...counts.entries()].sort(
     (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "de")
   );
-  const top = ranked[0];
-  const runnerUp = ranked[1];
-  if (!top) return null;
-  if (chunks.length === 1) return top[0];
-  if (top[1] >= 2 && top[1] > (runnerUp?.[1] ?? 0)) return top[0];
-  return null;
+  if (chunks.length === 1) return ranked[0] ? [ranked[0][0]] : [];
+
+  return ranked
+    .filter(([, count]) => count >= 2)
+    .slice(0, MAX_FOCUSED_REPOS)
+    .map(([repo]) => repo);
 };
 
 export async function* streamChat(
@@ -559,26 +602,35 @@ export async function* streamChat(
       hasImageUrl: !!c.imageUrl,
     })));
 
-    const focusedRepo = pickFocusedRepo(retrievalPlan.query, chunks);
-    const focusedChunks = focusedRepo
-      ? chunks.filter(chunk => chunk.repo === focusedRepo)
-      : chunks;
-    const showResources = asksForLinks(lastUser.content) || (focusedRepo !== null && !asksForCode(lastUser.content));
+    const focusedRepos = pickFocusedRepos(retrievalPlan.query, chunks);
+    const focusedChunks =
+      focusedRepos.length > 0
+        ? chunks.filter(chunk => focusedRepos.includes(chunk.repo))
+        : chunks;
+    const showResources =
+      asksForLinks(lastUser.content) ||
+      (focusedRepos.length > 0 && !asksForCode(lastUser.content));
+    // Bild zeigen, sobald klar ist, worum es geht. Die Zielgruppe hat das
+    // Bauteil zum ersten Mal in der Hand — ein Foto beantwortet "meinst du
+    // das hier?" schneller als jeder Satz. Frueher hing das an einer Liste
+    // von Formulierungen ("was ist", "anschliessen", ...), und genau die
+    // Einstiegsfrage "wie starte ich am einfachsten?" stand nicht drin.
     const showImage =
       asksForImage(lastUser.content) ||
-      (focusedRepo !== null &&
-        !asksForCode(lastUser.content) &&
-        (asksForSetupHelp(lastUser.content) || !!extractMaterialNumber(lastUser.content)));
+      (focusedRepos.length > 0 && !asksForCode(lastUser.content));
     const showExample = asksForCode(lastUser.content);
 
     debugLog("chat", "supplement selection", {
-      focusedRepo,
+      focusedRepos,
       showResources,
       showImage,
       showExample,
+      setupIntent: asksForSetupHelp(lastUser.content),
     });
 
-    const resources = showResources ? extractResources(focusedChunks) : [];
+    const resources = showResources
+      ? extractResources(focusedChunks, focusedRepos.length || 1)
+      : [];
     if (resources.length > 0) {
       debugLog("chat", "resources emitted", resources);
       yield { type: "resources", resources };
@@ -586,10 +638,10 @@ export async function* streamChat(
       debugLog("chat", "no structured resources extracted");
     }
 
-    const image = showImage ? pickBestImage(focusedChunks) : null;
-    if (image) {
-      debugLog("chat", "image emitted", image);
-      yield { type: "image", image };
+    const images = showImage ? pickImages(focusedChunks) : [];
+    if (images.length > 0) {
+      debugLog("chat", "images emitted", images);
+      yield { type: "images", images };
     } else {
       debugLog("chat", "no image selected");
     }

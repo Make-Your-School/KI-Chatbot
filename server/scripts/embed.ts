@@ -13,7 +13,7 @@
 // the new DB — the systemd unit handles this via ExecStartPost.
 
 import { readdir, readFile, mkdir, rename, unlink, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, relative, extname, posix } from "node:path";
 import { execSync } from "node:child_process";
 import { Database } from "bun:sqlite";
@@ -22,16 +22,46 @@ import { embedPassage } from "../src/embeddings.ts";
 import { config } from "../src/config.ts";
 
 const GITHUB_ORG = "Make-Your-School";
+
+// Repos der Organisation, die kein Hackday-Material sind.
+//
+// KI-Chatbot ist dieses Projekt selbst und war mit 257 Chunks der groesste
+// Posten im ganzen Index — 12 Prozent des Wissens waren TypeScript, Deploy-
+// Anleitungen und diese Datei hier. Das kann bei jeder Frage als Treffer
+// auftauchen; genau deswegen musste die Beispielcode-Karte in chat.ts auf
+// .ino/.c/.cpp/.h eingeengt werden, sonst servierte sie den eigenen
+// Serverquelltext als "Arduino-Beispiel".
+//
+// .github traegt nur Organisationsvorlagen (Issue-Templates, Profiltext).
+//
+// MiniHackIdeas bleibt bewusst drin: das sind echte Projektideen fuer
+// Schueler*innen, die frueh fertig sind.
+const SKIP_REPOS = new Set(["KI-Chatbot", ".github"]);
 const REPO_CACHE = process.env.REPO_CACHE ?? "./data/repos";
 const WORK_DB = config.rag.dbPath + ".tmp";
 const FINAL_DB = config.rag.dbPath;
 
-// What counts as "text worth embedding". Bias toward docs over source.
+// Was eingebettet wird: Doku und Bauteil-Code. Sonst nichts.
+//
+// Gemessen am 23.09.2026 ueber alle 83 Repos: mit .json/.js/.ts/.html/.css/.yml
+// bestanden 1279 von 2218 Chunks — also 58 Prozent des gesamten Wissens — aus
+// Quelltext und Konfiguration von Webprojekten. Allein mks-welcome/tools/meta.json,
+// ein Build-Artefakt der Projektwebseite, war mit 658 Chunks fast ein Drittel
+// des Index.
+//
+// Der Verlust ist messbar klein: von den 935 Web-/Config-Chunks stammten 929 aus
+// mks-welcome, die restlichen 6 verteilten sich auf vier Material-Repos. Kein
+// einziges Arduino- oder Calliope-Beispiel haengt daran.
+//
+// Das ist nicht nur Platzverschwendung: die Bedeutungssuche vergibt pro Frage
+// genau RAG_TOP_K Plaetze, und jeder Chunk Webquelltext konkurriert darin mit
+// echten Bauteil-Dokus.
+//
+// .py bleibt drin — die Raspberry-Pi-Repos koennten Python-Beispiele bekommen,
+// und aktuell kostet es genau einen Chunk.
 const TEXT_EXTS = new Set([
   ".md", ".mdx", ".txt", ".rst",
-  ".py", ".js", ".ts", ".jsx", ".tsx",
-  ".html", ".css", ".json", ".yml", ".yaml",
-  ".ino", ".c", ".cpp", ".h",
+  ".ino", ".c", ".cpp", ".h", ".py",
 ]);
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "__pycache__", ".next", ".cache",
@@ -52,6 +82,13 @@ type Repo = {
   default_branch: string;
   archived: boolean;
   fork: boolean;
+};
+
+/** Loescht eine sqlite-Datei samt ihrer Begleitdateien -wal und -shm. */
+const removeDbFiles = async (path: string): Promise<void> => {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    if (existsSync(path + suffix)) await unlink(path + suffix);
+  }
 };
 
 const repoUrl = (repo: Repo): string => repo.clone_url.replace(/\.git$/, "");
@@ -92,7 +129,7 @@ const listRepos = async (): Promise<Repo[]> => {
     }
     const batch = (await resp.json()) as Repo[];
     if (batch.length === 0) break;
-    out.push(...batch.filter(r => !r.archived && !r.fork));
+    out.push(...batch.filter(r => !r.archived && !r.fork && !SKIP_REPOS.has(r.name)));
     if (batch.length < 100) break;
     page += 1;
   }
@@ -347,7 +384,7 @@ const metadataChunk = (repo: Repo, relPath: string, frontmatter: string): string
 const main = async () => {
   await mkdir(REPO_CACHE, { recursive: true });
   await mkdir("./data", { recursive: true });
-  if (existsSync(WORK_DB)) await unlink(WORK_DB);
+  await removeDbFiles(WORK_DB);
 
   console.log(`[embed] listing repos from ${GITHUB_ORG}...`);
   const repos = await listRepos();
@@ -464,15 +501,44 @@ const main = async () => {
     console.log(`[embed]   ${repo.name}: ${repoChunks} chunks`);
   }
 
+  // Alles aus dem WAL in die Hauptdatei schreiben, BEVOR umbenannt wird.
+  //
+  // Der Tausch unten bewegt nur knowledge.db.tmp — nicht die Begleitdateien
+  // -wal und -shm. Ohne diesen Checkpoint bleibt alles, was seit dem letzten
+  // automatischen Checkpoint geschrieben wurde, im zurueckgelassenen -wal
+  // liegen und ist weg. db.close() allein raeumt das WAL nicht ab.
+  //
+  // Das ist nicht theoretisch: am 23.09.2026 meldete der naechtliche Lauf
+  // "done — 2125 chunks", und genau die letzten acht Repos fehlten danach im
+  // Index — darunter mks-Arduino-UNO_R4_WiFi mit 94 Chunks. Die lagen in einer
+  // 4,3 MB grossen .tmp-wal, die beim Umbenennen liegen blieb. Der Lauf meldete
+  // dabei keinen einzigen Fehler, weil aus seiner Sicht auch keiner passiert war.
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
 
   if (total === 0) {
-    if (existsSync(WORK_DB)) await unlink(WORK_DB);
+    await removeDbFiles(WORK_DB);
     throw new Error("No chunks embedded; refusing to replace existing knowledge DB");
   }
 
+  // Wenn nach dem Checkpoint immer noch etwas im WAL steht, waere der Tausch
+  // ein stiller Datenverlust. Dann lieber laut abbrechen und die alte, heile
+  // Datenbank stehen lassen.
+  const leftover = existsSync(WORK_DB + "-wal") ? statSync(WORK_DB + "-wal").size : 0;
+  if (leftover > 0) {
+    throw new Error(
+      `WAL checkpoint failed: ${leftover} bytes still in ${WORK_DB}-wal. ` +
+        `Refusing to swap — the existing knowledge DB is untouched.`
+    );
+  }
+
   // Atomic swap into place.
-  if (existsSync(FINAL_DB)) await unlink(FINAL_DB);
+  //
+  // Auch -wal und -shm der ALTEN Datei muessen weg. Bleiben sie liegen, haengen
+  // sie sich an die frisch umbenannte Datei und sqlite liest eine fremde
+  // Journaldatei zu einer neuen Datenbank. Auf dem Server lag so eine Leiche
+  // vom 11.04.2026 herum.
+  await removeDbFiles(FINAL_DB);
   await rename(WORK_DB, FINAL_DB);
 
   console.log(`[embed] done — ${total} total chunks written to ${FINAL_DB}`);

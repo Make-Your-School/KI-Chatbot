@@ -299,8 +299,8 @@ button, .link-btn {
   font-family: var(--font-mono);
   opacity: .8;
 }
-.answer-image + .example-code,
-.answer-image + .resources,
+.answer-images + .example-code,
+.answer-images + .resources,
 .example-code + .resources,
 .example-code + .sources,
 .example-code + .msg-meta,
@@ -313,8 +313,19 @@ button, .link-btn {
   margin-top: .35rem;
 }
 
-.answer-image {
+.answer-images {
   margin-top: .7rem;
+  display: grid;
+  gap: .5rem;
+}
+/* Zwei Boards nebeneinander, damit man sie vergleichen kann. Unter 26rem
+   Blasenbreite passt das nicht mehr, dann untereinander. */
+.answer-images.is-pair {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+.answer-image {
+  margin: 0;
+  min-width: 0;
 }
 .answer-image a {
   display: block;
@@ -329,6 +340,16 @@ button, .link-btn {
   max-height: 16rem;
   object-fit: contain;
   background: color-mix(in oklab, var(--bg) 88%, black 12%);
+}
+.answer-images.is-pair .answer-image img {
+  max-height: 10rem;
+}
+.answer-image-caption {
+  margin-top: .3rem;
+  font-size: .76rem;
+  color: var(--fg-muted);
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .example-code {
@@ -422,12 +443,31 @@ button, .link-btn {
   padding-top: .5rem;
   border-top: 1px dashed var(--border);
 }
-.sources strong {
-  display: block;
-  margin-bottom: .4rem;
+.sources > summary {
   font-size: .82rem;
   font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  color: var(--fg-muted);
 }
+.sources > summary::-webkit-details-marker { display: none; }
+/* Eigenes Dreieck statt des Browser-Markers: das native sitzt je nach Browser
+   woanders und laesst sich nicht mitdrehen. */
+.sources > summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: .32rem solid currentColor;
+  border-top: .26rem solid transparent;
+  border-bottom: .26rem solid transparent;
+  transition: transform .15s ease;
+}
+.sources[open] > summary::before { transform: rotate(90deg); }
+.sources > summary:hover { color: var(--fg); }
+.sources[open] > .resource-list { margin-top: .45rem; }
 .sources .resource-link-label {
   font-family: var(--font-mono);
   font-size: .74rem;
