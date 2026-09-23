@@ -752,6 +752,14 @@ const makeResourceLink = (resource, safeHref) => {
   title.className = "resource-link-label";
   title.textContent = resource.label || safeHref;
   link.appendChild(title);
+  // Das blosse Wort "Video" über einem Vorschaubild mit Play-Dreieck sagt
+  // nichts, was das Bild nicht schon sagt — der Host darunter schon. Hat das
+  // Video eine echte Beschriftung ("Video: Aufbau"), bleibt sie stehen; die
+  // hat jemand von Hand geschrieben. Für Screenreader bleibt der Text da, er
+  // wird nur unsichtbar gestellt.
+  if (link.dataset.kind === "video" && /^videos?$/i.test(title.textContent.trim())) {
+    link.classList.add("is-labelless");
+  }
   appendHostChip(link, safeHref);
 
   // Repo-Karten tragen das Foto des Bauteils, Video-Karten das Vorschaubild.
@@ -766,8 +774,9 @@ const makeResourceLink = (resource, safeHref) => {
 // Bewusst KEIN <details>: dessen Inhalt liegt im selben Kasten wie die Karte,
 // und sobald er aufklappt, wächst der Kasten und schiebt die Karte an eine
 // andere Stelle. Stattdessen ist die Karte ein Knopf im Kartenraster und die
-// Videoliste eine eigene Zeile darunter — die Karte bleibt beim Klicken liegen,
-// wo sie ist.
+// Videoliste ein Rasterfeld über die volle Breite, das direkt hinter dem Knopf
+// im DOM steht — es öffnet sich also in der Zeile unter ihm und nicht am Ende
+// des ganzen Rasters.
 //
 // Der Stapel plus Play-Dreieck sagt schon "hier sind mehrere Videos", deshalb
 // ohne sichtbaren Text. Für Screenreader steht die Beschriftung im aria-label,
@@ -792,6 +801,10 @@ const makeVideoGroup = (videos, list) => {
   for (const entry of videos) {
     panel.appendChild(makeResourceLink(entry.resource, entry.safeHref));
   }
+  // Der Knopf zeigt auf sein Panel, damit Screenreader den Bezug haben —
+  // sichtbar steht es ohnehin direkt darunter.
+  panel.id = `videolist-${Math.random().toString(36).slice(2, 9)}`;
+  button.setAttribute("aria-controls", panel.id);
 
   button.addEventListener("click", () => {
     const open = panel.hidden;
@@ -802,7 +815,7 @@ const makeVideoGroup = (videos, list) => {
   });
 
   list.appendChild(button);
-  return panel;
+  list.appendChild(panel);
 };
 
 const makeResourcesBlock = (resources) => {
@@ -834,7 +847,6 @@ const makeResourcesBlock = (resources) => {
   // des ERSTEN Videos statt ans Ende — vorher liefen erst alle anderen Karten
   // durch und dann die Videos, wodurch der Shop vor den Videos landete,
   // obwohl der Server ihn längst dahinter einsortiert hatte.
-  let videoPanel = null;
   let videoPlaced = false;
   for (const entry of usable) {
     if (entry.resource.kind !== "video") {
@@ -849,15 +861,12 @@ const makeResourcesBlock = (resources) => {
     if (videos.length === 1) {
       list.appendChild(makeResourceLink(entry.resource, entry.safeHref));
     } else {
-      videoPanel = makeVideoGroup(videos, list);
+      makeVideoGroup(videos, list);
     }
   }
 
   if (!list.childNodes.length) return null;
   wrap.appendChild(list);
-  // Eigene Zeile unter dem Raster, damit das Aufklappen die Karten darüber
-  // nicht verschiebt.
-  if (videoPanel) wrap.appendChild(videoPanel);
   return wrap;
 };
 

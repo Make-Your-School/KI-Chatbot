@@ -446,8 +446,17 @@ button, .link-btn {
   align-items: stretch;
   gap: .5rem;
 }
+/* Die Videoliste steht im selben Raster wie die Karten, direkt hinter dem
+   Knopf, und nimmt die volle Breite. Dadurch klappt sie in der Zeile UNTER
+   ihrem Knopf auf statt am Ende des ganzen Rasters. Die Karten darüber bleiben
+   liegen, die darunter rücken nach — das ist die Bewegung, die man erwartet. */
+.resources > .resource-list > .resource-videolist {
+  grid-column: 1 / -1;
+}
+/* Abgesetzt, damit die aufgeklappte Reihe nicht mit den Karten verschwimmt. */
 .resource-videolist {
-  margin-top: .5rem;
+  padding-top: .5rem;
+  border-top: 1px solid var(--border);
 }
 /* Muss nach der display-Regel oben stehen: ein ausgeschriebenes display
    schlägt das display:none, das der Browser dem hidden-Attribut mitgibt.
@@ -880,10 +889,16 @@ button, .link-btn {
 .resource-link.is-videogroup:hover .resource-stack-img[data-depth="2"] {
   transform: translateX(-58%) rotate(-11deg);
 }
-/* Aufgeklappt braucht der Stapel nicht mehr zu locken — er legt sich flach. */
-.resource-link.is-videogroup.is-open .resource-stack-img[data-depth="1"],
+/* Aufgeklappt bleibt der Stapel ein Stapel — vorher legte er sich flach und
+   sah danach aus wie eine gewöhnliche Einzelkarte, obwohl darunter gerade
+   mehrere Videos stehen. Stattdessen fächert er weiter auf: dieselbe Geste wie
+   beim Überfahren, nur deutlicher. Der Knopf sagt damit "ich bin offen", ohne
+   dass er dafür seine Form verliert. */
+.resource-link.is-videogroup.is-open .resource-stack-img[data-depth="1"] {
+  transform: translateX(-40%) rotate(13deg);
+}
 .resource-link.is-videogroup.is-open .resource-stack-img[data-depth="2"] {
-  transform: translateX(-50%) rotate(0deg);
+  transform: translateX(-60%) rotate(-13deg);
 }
 @media (prefers-reduced-motion: reduce) {
   .resource-stack-img { transition: none; }
@@ -898,8 +913,13 @@ button, .link-btn {
   font: inherit;
   text-align: left;
 }
-/* Play-Dreieck auf dem Vorschaubild — so liest sich die Karte als Video. */
-.resource-link.is-videogroup.has-thumb::after {
+/* Play-Dreieck auf dem Vorschaubild — so liest sich die Karte als Video.
+   Gilt für die Stapelkarte genauso wie für die einzelnen Videos in der Liste. */
+.resource-link[data-kind="video"] {
+  position: relative;
+}
+.resource-link.is-videogroup.has-thumb::after,
+.resource-link[data-kind="video"].has-thumb::after {
   content: "";
   position: absolute;
   /* Mitte des Vorschaubilds: Innenabstand oben plus halbe Bildhöhe. */
@@ -921,7 +941,11 @@ button, .link-btn {
 /* Solange Vorschaubilder da sind, braucht die Karte keine Beschriftung — der
    Stapel und das Play-Dreieck sagen es. Fällt die Vorschau aus, nimmt has-thumb
    die Klasse weg und der Text erscheint wieder. */
-.resource-link.is-videogroup.has-thumb .resource-link-label {
+/* Dasselbe für eine Videokarte, deren Beschriftung nur "Video" lautet: das
+   Vorschaubild mit Play-Dreieck sagt es schon, der Host darunter sagt den Rest.
+   Ohne Vorschaubild bleibt der Text, sonst stünde dort eine leere Karte. */
+.resource-link.is-videogroup.has-thumb .resource-link-label,
+.resource-link.is-labelless.has-thumb .resource-link-label {
   position: absolute;
   width: 1px;
   height: 1px;
