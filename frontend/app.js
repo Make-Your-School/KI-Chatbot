@@ -1327,10 +1327,15 @@ const sendMessage = async (text) => {
       });
       saveHistory(history);
       if (assistantBubble) {
+        // Erst den fertigen Text setzen, dann die Fotos hineinhaengen.
+        // setBubbleContent schreibt .bubble-content komplett neu — stand
+        // placeImages davor, wurde der Bildblock genau dann wieder geloescht,
+        // wenn er seinen Absatz gefunden hatte. Sichtbar war das als "die
+        // Fotos fehlen", obwohl sie unterwegs kurz da waren.
+        setBubbleContent(assistantBubble, "assistant", presentation.content);
         placeImages(assistantBubble, images);
         const exampleBlock = makeExampleBlock(example);
         if (exampleBlock) assistantBubble.appendChild(exampleBlock);
-        setBubbleContent(assistantBubble, "assistant", presentation.content);
         const resourcesBlock = makeResourcesBlock(presentation.resources);
         if (resourcesBlock) assistantBubble.appendChild(resourcesBlock);
         const srcBlock = makeSourcesBlock(sources);
