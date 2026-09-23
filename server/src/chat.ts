@@ -919,14 +919,16 @@ export async function* streamChat(
       debugLog("chat", "no structured resources extracted");
     }
 
-    // Ein Repo, dessen Bild schon auf seiner Link-Karte steht, braucht oben
-    // kein zweites. Sonst steht dasselbe Foto zweimal in derselben Blase.
-    const reposWithImageCard = new Set(
-      resources.filter(r => r.image && r.repo).map(r => r.repo as string)
-    );
-    const images = showImage
-      ? pickImages(focusedChunks).filter(image => !reposWithImageCard.has(image.repo))
-      : [];
+    // Die Fotos stehen direkt unter der Antwort, nicht nur klein auf den
+    // Link-Karten ganz unten.
+    //
+    // Sie waren kurzzeitig rausgefiltert, weil dasselbe Foto dann zweimal in
+    // der Blase steht. Die beiden tun aber Verschiedenes: oben beantworten sie
+    // "welches der beiden liegt vor mir?", waehrend im Text genau darueber
+    // geredet wird — unten sind sie nur das Erkennungszeichen eines Links. Wer
+    // die Frage "welches Board hast du?" liest, soll nicht erst an drei
+    // Absaetzen vorbeiscrollen, um die Boards zu sehen.
+    const images = showImage ? pickImages(focusedChunks) : [];
     if (images.length > 0) {
       debugLog("chat", "images emitted", images);
       yield { type: "images", images };

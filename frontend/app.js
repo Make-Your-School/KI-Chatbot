@@ -523,6 +523,68 @@ const renderAssistantMarkdown = (text) => {
   return blocks.join("");
 };
 
+// Kopierknopf für Codeblöcke.
+//
+// Abtippen ist bei Schüler*innen, die zum ersten Mal programmieren, die
+// häufigste Fehlerquelle überhaupt — ein vergessenes Semikolon und nichts geht
+// mehr. Der Knopf spart genau das.
+const copyToClipboard = async (text) => {
+  // Die Zwischenablage-Schnittstelle gibt es nur in sicherem Kontext. In
+  // Produktion läuft alles über https, aber bei einem lokalen Test über http
+  // fehlt sie — dann der alte Weg über ein unsichtbares Textfeld.
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* z.B. abgelehnte Berechtigung — unten weiterversuchen */
+    }
+  }
+  try {
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const ok = document.execCommand("copy");
+    field.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+};
+
+const addCopyButton = (pre) => {
+  if (pre.querySelector(".code-copy")) return;
+  pre.classList.add("has-copy");
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "code-copy";
+  button.textContent = "Kopieren";
+
+  let resetTimer = null;
+  button.addEventListener("click", async () => {
+    const ok = await copyToClipboard(pre.querySelector("code")?.textContent ?? "");
+    button.textContent = ok ? "Kopiert" : "Ging nicht";
+    button.classList.toggle("is-done", ok);
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => {
+      button.textContent = "Kopieren";
+      button.classList.remove("is-done");
+    }, 1600);
+  });
+
+  pre.appendChild(button);
+};
+
+/** Hängt an jeden Codeblock unterhalb von root einen Kopierknopf. */
+const addCopyButtons = (root) => {
+  for (const pre of root.querySelectorAll("pre")) addCopyButton(pre);
+};
+
 const setBubbleContent = (bubble, role, text, { streaming = false } = {}) => {
   const contentEl = bubble.querySelector(".bubble-content");
   if (!contentEl) return;
@@ -534,6 +596,10 @@ const setBubbleContent = (bubble, role, text, { streaming = false } = {}) => {
       ? stripResourceTail(text)
       : getAssistantPresentation(text).content;
     contentEl.innerHTML = renderAssistantMarkdown(content);
+    // Während des Streamens nicht: der Inhalt wird bei jedem Token neu gesetzt,
+    // der Knopf wäre bei jedem Wort weg und wieder da. Und ein halb
+    // geschriebener Codeblock ist ohnehin nichts zum Kopieren.
+    if (!streaming) addCopyButtons(contentEl);
     return;
   }
 
@@ -762,19 +828,29 @@ const makeResourcesBlock = (resources) => {
   }
 
   const videos = usable.filter(entry => entry.resource.kind === "video");
-  const rest = usable.filter(entry => entry.resource.kind !== "video");
 
-  for (const entry of rest) list.appendChild(makeResourceLink(entry.resource, entry.safeHref));
-
-  // One video is just a card. Five are a wall — and five is exactly what the two
-  // Arduino boards bring along. So from two on they collapse into one card that
-  // looks like the others and opens the rest when clicked, rather than into a
-  // thin text toggle that reads like a footnote next to the picture cards.
+  // Die Karten stehen in der Reihenfolge, die der Server geschickt hat: Repo,
+  // Anleitung, Video, Hersteller, Shop. Die Videogruppe rutscht an die Stelle
+  // des ERSTEN Videos statt ans Ende — vorher liefen erst alle anderen Karten
+  // durch und dann die Videos, wodurch der Shop vor den Videos landete,
+  // obwohl der Server ihn längst dahinter einsortiert hatte.
   let videoPanel = null;
-  if (videos.length === 1) {
-    list.appendChild(makeResourceLink(videos[0].resource, videos[0].safeHref));
-  } else if (videos.length > 1) {
-    videoPanel = makeVideoGroup(videos, list);
+  let videoPlaced = false;
+  for (const entry of usable) {
+    if (entry.resource.kind !== "video") {
+      list.appendChild(makeResourceLink(entry.resource, entry.safeHref));
+      continue;
+    }
+    if (videoPlaced) continue;
+    videoPlaced = true;
+    // Ein Video ist eine Karte. Fünf sind eine Wand — und fünf ist genau das,
+    // was die zwei Arduino-Boards mitbringen. Ab zwei klappen sie deshalb zu
+    // einer Karte zusammen, die beim Klicken die übrigen zeigt.
+    if (videos.length === 1) {
+      list.appendChild(makeResourceLink(entry.resource, entry.safeHref));
+    } else {
+      videoPanel = makeVideoGroup(videos, list);
+    }
   }
 
   if (!list.childNodes.length) return null;
@@ -942,6 +1018,7 @@ const makeExampleBlock = (example) => {
   const code = document.createElement("code");
   code.textContent = example.code;
   pre.appendChild(code);
+  addCopyButton(pre);
   wrap.appendChild(pre);
 
   if (example.truncated) {

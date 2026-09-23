@@ -428,6 +428,12 @@ button, .link-btn {
 .resource-videolist {
   margin-top: .5rem;
 }
+/* Muss nach der display-Regel oben stehen: ein ausgeschriebenes display
+   schlägt das display:none, das der Browser dem hidden-Attribut mitgibt.
+   Ohne diese Zeile stand die Videoliste von Anfang an offen. */
+.resource-videolist[hidden] {
+  display: none;
+}
 .resources > .resource-list > .resource-link,
 .resource-videolist > .resource-link {
   width: auto;
@@ -914,4 +920,43 @@ button, .link-btn {
   margin-bottom: .3rem;
   object-fit: contain;
   border-radius: 3px;
+}
+
+/* Kopierknopf in der Ecke eines Codeblocks */
+pre.has-copy {
+  position: relative;
+}
+.code-copy {
+  position: absolute;
+  top: .4rem;
+  right: .4rem;
+  padding: .2rem .5rem;
+  font: inherit;
+  font-size: .72rem;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  background: color-mix(in oklab, var(--bg-alt) 85%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  /* Sonst landet "Kopieren" mit im markierten Text, wenn jemand den Code von
+     Hand auswählt. */
+  user-select: none;
+  /* Auf dem Handy gibt es kein Hover — deshalb immer sichtbar, nur dezent. */
+  opacity: .65;
+  transition: opacity .15s ease, color .15s ease;
+}
+pre.has-copy:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+  color: var(--fg);
+}
+.code-copy.is-done {
+  opacity: 1;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .code-copy { transition: none; }
 }
