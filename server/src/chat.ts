@@ -59,7 +59,7 @@ type HistoryMessage = ChatMessage & {
   example?: ExampleHint;
 };
 
-type ResourceKind = "repo" | "doc" | "video" | "product" | "other";
+type ResourceKind = "repo" | "doc" | "video" | "shop" | "vendor" | "other";
 
 type ResourceLink = {
   label: string;
@@ -346,27 +346,78 @@ const videoThumbPath = (url: string): string | undefined => {
   return id ? `/api/video-thumb/${id}` : undefined;
 };
 
+// Einordnung nach der Adresse, nicht nach dem Feldnamen im Frontmatter.
+//
+// Die Feldnamen sagen etwas anderes als der Inhalt, und zwar systematisch.
+// Gezaehlt ueber alle 83 Repos am 23.09.2026:
+//
+//   product_url     ->  53x wiki.seeedstudio.com   (das ist das WIKI)
+//   manufacture_url ->  54x www.seeedstudio.com/   (nur die Startseite)
+//
+// Die Karte "Produktseite" fuehrte also aufs Wiki und "Herstellerseite" in den
+// Shop. Beides war doppelt irrefuehrend: falsch beschriftet und falsch
+// einsortiert. Die Adresse selbst luegt nicht.
+const DOC_HOST_RE = /^(wiki|learn|docs?|tutorial|support)\./i;
+const DOC_PATH_RE = /\/(wiki|learn|docs?|tutorials?|getting-started|datasheet)(\/|$|\.)/i;
+const SHOP_HOST_RE = /^(store|shop)\./i;
+const SHOP_PATH_RE = /\/(products?|cart|kategorie|shop)(\/|$)/i;
+// Seiten, auf denen praktisch jede Unterseite eine Verkaufsseite ist. Fuer
+// seeedstudio.com gilt das auch — das Wiki liegt auf einem eigenen Host und
+// wird eine Zeile weiter oben schon als Anleitung erkannt.
+const RETAILER_RE =
+  /^(reichelt|conrad|amazon|mouser|digikey|farnell|berrybase|seeedstudio)\./i;
+
 const classifyResourceKind = (label: string, url: string): ResourceKind => {
-  const haystack = `${label} ${url}`.toLowerCase();
-  if (haystack.includes("youtu.be") || haystack.includes("youtube.com") || haystack.includes("video")) {
-    return "video";
+  const text = label.toLowerCase();
+  if (/youtu\.be|youtube\.com/i.test(url) || text.includes("video")) return "video";
+
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(url);
+  } catch {
+    /* ohne Adresse bleibt nur der Text, siehe unten */
   }
-  if (haystack.includes("produkt") || haystack.includes("product")) {
-    return "product";
+
+  if (parsed) {
+    // Die Reihenfolge ist die Aussage. Erst was eindeutig ist, dann die
+    // Startseite, zuletzt der Shop-Verdacht.
+    const host = parsed.hostname.replace(/^www\./, "");
+    const path = parsed.pathname;
+
+    if (host === "github.com") return "repo";
+    if (DOC_HOST_RE.test(host) || DOC_PATH_RE.test(path)) return "doc";
+    // Blosse Startseite: sagt ueber das konkrete Bauteil nichts, egal wem sie
+    // gehoert. 54 Repos verlinken hier identisch auf www.seeedstudio.com/.
+    if (path === "/" || path === "") return "vendor";
+    if (SHOP_HOST_RE.test(host) || SHOP_PATH_RE.test(path) || RETAILER_RE.test(`${host}.`)) {
+      return "shop";
+    }
+    // Eine Unterseite beim Hersteller, die weder Anleitung noch Shop ist —
+    // etwa calliope.cc/calliope-mini/technische-daten. Die ist brauchbar und
+    // soll nicht als Shop nach hinten sortiert werden.
+    return "other";
   }
-  if (
-    haystack.includes("readme") ||
-    haystack.includes("doku") ||
-    haystack.includes("wiki") ||
-    haystack.includes("anleitung") ||
-    haystack.includes("blob/")
-  ) {
-    return "doc";
-  }
-  if (haystack.includes("github") || haystack.includes("repo")) {
-    return "repo";
-  }
+
+  // Nur wenn sich die Adresse nicht lesen laesst, entscheidet die Beschriftung.
+  // Sie taugt dafuer schlecht — "Produktseite" steht im Frontmatter 53 Mal
+  // ueber einem Wiki-Link —, ist dann aber das Einzige, was da ist.
+  if (text.includes("wiki") || text.includes("doku") || text.includes("anleitung")) return "doc";
+  if (text.includes("hersteller")) return "vendor";
+  if (text.includes("produkt") || text.includes("shop")) return "shop";
   return "other";
+};
+
+// Die Beschriftung aus dem Frontmatter ist genauso unzuverlaessig wie die
+// Einordnung, also wird sie fuer diese drei Arten ersetzt. Beschriftungen aus
+// dem Fliesstext ("Video: Aufbau") bleiben, die hat jemand von Hand geschrieben.
+const FRONTMATTER_LABELS = new Set(["produktseite", "herstellerseite", "github-repo"]);
+
+const relabelByKind = (label: string, kind: ResourceKind): string => {
+  if (!FRONTMATTER_LABELS.has(label.trim().toLowerCase())) return label;
+  if (kind === "doc") return "Wiki / Anleitung";
+  if (kind === "shop") return "Shop";
+  if (kind === "vendor") return "Herstellerseite";
+  return label;
 };
 
 const sourceResourceLabel = (path: string): string => {
@@ -451,8 +502,8 @@ const extractResources = (
     const kind = known ? "repo" : classifyResourceKind(label, url);
     all.push({
       // Bei einem Fokus-Repo gewinnt der Name des Bauteils ueber das, was
-      // zufaellig im Text als Linktext stand.
-      label: seeded?.label ?? label,
+      // zufaellig im Text als Linktext stand. Sonst entscheidet die Art.
+      label: seeded?.label ?? relabelByKind(label, kind),
       url,
       kind,
       image: known
@@ -486,7 +537,11 @@ const extractResources = (
   }
 
   const sorted = all.sort((a, b) => {
-    const kindOrder = { repo: 0, doc: 1, video: 2, product: 3, other: 4 };
+    // Reihenfolge nach Nutzen waehrend der Hackdays: erst das Bauteil-Repo,
+    // dann die Anleitung, dann Videos. Der Shop steht weit hinten — wer gerade
+    // baut, will nicht wissen, wo man das Teil kaufen kann. Die blosse
+    // Startseite des Herstellers sagt ueber das Bauteil gar nichts.
+    const kindOrder = { repo: 0, doc: 1, video: 2, other: 3, shop: 4, vendor: 5 };
     return (
       kindOrder[a.kind] - kindOrder[b.kind] ||
       labelPriority(a.label) - labelPriority(b.label) ||
@@ -507,15 +562,17 @@ const extractResources = (
     repo: Math.max(1, Math.min(repoLinkLimit, MAX_FOCUSED_REPOS)),
     doc: 1,
     video: MAX_VIDEO_LINKS,
-    product: 1,
     other: 1,
+    shop: 1,
+    vendor: 1,
   };
   const used: Record<ResourceKind, number> = {
     repo: 0,
     doc: 0,
     video: 0,
-    product: 0,
     other: 0,
+    shop: 0,
+    vendor: 0,
   };
   const selected: ResourceLink[] = [];
 
