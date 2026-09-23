@@ -158,6 +158,84 @@ const makeBreakdown = (title, byRange, emptyText) => {
   return wrap;
 };
 
+// Today's budget. Unlike everything else on this page these are live limiter
+// counters, not stored history — they reset at midnight (UTC) and on restart.
+// The page says so, because a bar that silently jumped back to zero after a
+// deploy would look like lost data.
+const pct = (used, limit) => (limit > 0 ? Math.min(100, (used / limit) * 100) : 0);
+
+const makeMeter = (label, used, limit, hint) => {
+  const line = el("div", "quota-line");
+
+  const head = el("div", "quota-head");
+  head.appendChild(el("span", "quota-label", label));
+  head.appendChild(el("span", "quota-value", `${nf.format(used)} / ${nf.format(limit)}`));
+  line.appendChild(head);
+
+  const track = el("div", "quota-track");
+  const fill = el("div", "quota-fill");
+  const share = pct(used, limit);
+  fill.style.width = `${Math.max(share > 0 ? 1.5 : 0, share)}%`;
+  // Colour is a warning, not decoration: past 75% the day can still run out.
+  if (share >= 90) fill.classList.add("is-critical");
+  else if (share >= 75) fill.classList.add("is-warn");
+  track.appendChild(fill);
+  line.appendChild(track);
+
+  if (hint) line.appendChild(el("div", "quota-hint", hint));
+  return line;
+};
+
+const makeQuota = (quota) => {
+  const wrap = el("section", "stats-card");
+  wrap.appendChild(el("h2", null, "Tagesbudget"));
+
+  if (!quota) {
+    wrap.appendChild(el("p", "stats-empty", "Keine Budgetdaten."));
+    return wrap;
+  }
+
+  const codes = el("div", "quota-group");
+  if (!quota.codes || quota.codes.length === 0) {
+    codes.appendChild(el("p", "stats-empty", "Keine gültigen Chat-Codes."));
+  } else {
+    for (const code of quota.codes) {
+      const name = code.label ? `${code.school} · ${code.label}` : code.school;
+      codes.appendChild(makeMeter(name, code.used, code.limit));
+    }
+  }
+  wrap.appendChild(codes);
+
+  const perPerson = el("div", "quota-group");
+  perPerson.appendChild(
+    makeMeter(
+      "Meiste Anfragen aus einer Sitzung",
+      quota.sessions.busiest,
+      quota.sessions.limit,
+      `${nf.format(quota.sessions.active)} Sitzungen heute aktiv, zusammen ${nf.format(quota.sessions.used)} Anfragen`
+    )
+  );
+  perPerson.appendChild(
+    makeMeter(
+      "Meiste Anfragen aus einem Browser",
+      quota.browsers.busiest,
+      quota.browsers.limit,
+      `${nf.format(quota.browsers.active)} Browser heute aktiv, zusammen ${nf.format(quota.browsers.used)} Anfragen`
+    )
+  );
+  wrap.appendChild(perPerson);
+
+  wrap.appendChild(
+    el(
+      "p",
+      "stats-note",
+      "Zählt seit Mitternacht (UTC) und seit dem letzten Neustart des Dienstes — der " +
+        "spätere von beiden. Diese Zahlen werden nicht gespeichert."
+    )
+  );
+  return wrap;
+};
+
 const makeSystem = (sys) => {
   const wrap = el("section", "stats-card");
   wrap.appendChild(el("h2", null, "Server"));
@@ -194,6 +272,7 @@ const render = (data) => {
   overview.appendChild(makeTable(data));
   statsBody.appendChild(overview);
 
+  statsBody.appendChild(makeQuota(data.quota));
   statsBody.appendChild(makeChart(data.daily));
   statsBody.appendChild(
     makeBreakdown("Anbieter", data.providers, "Noch keine Antworten gezählt.")

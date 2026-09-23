@@ -52,9 +52,16 @@ const SEARCH_STOPWORDS = new Set([
   "die", "das", "den", "dem", "des", "und", "oder", "aber", "mit",
   "ohne", "für", "fuer", "von", "vom", "im", "in", "am", "an", "auf",
   "zu", "zum", "zur", "wie", "was", "welche", "welcher", "welches",
-  "material", "grove", "sensor", "board", "kabel", "arduino", "projekt", "code",
+  "material", "grove", "sensor", "board", "kabel", "projekt", "code",
   "sketch", "beispiel", "programm",
 ]);
+
+// "arduino" steht bewusst NICHT in der Liste oben. Es kommt zwar in fast jedem
+// Repo-Text vor, aber nur in drei Repo-NAMEN — und genau die (mks-Arduino-UNO_R3,
+// mks-Arduino-UNO_R4_WiFi, mys_arduino_metalibrary) sind bei einer Einsteiger-
+// frage wie "ich habe noch nie mit Arduino gearbeitet" die richtige Antwort.
+// Die Gewichtung unten sorgt dafuer, dass ein Namenstreffer eine beilaeufige
+// Erwaehnung im Text klar schlaegt.
 
 const extractMaterialNumber = (query: string): string | null => {
   const match = query.match(/\bmaterial(?:karte)?(?:\s*(?:nr\.?|nummer))?\s*#?\s*(\d{1,4})\b/i);
@@ -96,13 +103,50 @@ const extractSearchTerms = (query: string): string[] => {
 const escapeLike = (term: string): string =>
   term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 
+// Stichwortsuche: "hat die Person ein Bauteil beim Namen genannt?"
+//
+// Nicht zu verwechseln mit der Bedeutungssuche weiter unten. Hier geht es nur
+// um den Fall, dass ein Wort aus der Frage auf ein Repo zeigt. Deshalb zaehlt
+// der Repo-Name am meisten, der Pfad etwas und der Fliesstext fast nichts:
+// "Arduino" steht in fast jedem Text, aber nur in drei Repo-Namen.
+const SCORE_REPO = 4;
+const SCORE_PATH = 2;
+const SCORE_TEXT = 1;
+
+// Die Startseite eines Repos ist fast immer die bessere Antwort als eine tief
+// verschachtelte Beispiel-Doku. Ohne diesen Bonus gewann bei "wie fange ich mit
+// Arduino an" examples/dev/UNO_R4_WiFi-Bluetooth_DroidPad/readme.md gegen die
+// eigentliche readme.md des Boards.
+const SCORE_ROOT_README = 2;
+
+// Ab hier gilt ein Treffer als gemeint und nicht als Zufall. 5 heisst in der
+// Praxis: der Repo-Name selbst wurde getroffen (4) und noch irgendetwas dazu.
+// Ein blosser Texttreffer reicht nicht mehr — genau der hat frueher bei "wie
+// starte ich am einfachsten" die kurzen *_minimal.ino-Dateien nach oben
+// gespuelt und alles andere verdraengt. Was hier durchfaellt, ist nicht
+// verloren: die Bedeutungssuche bekommt den Platz.
+const KEYWORD_SCORE_FLOOR = 5;
+
+// Wie viele der k Plaetze die Stichwortsuche hoechstens belegen darf. Sie steht
+// im Merge vor der Bedeutungssuche, durfte vorher alle Plaetze belegen und
+// konnte damit die Bedeutungssuche komplett aushebeln. Die Haelfte reservieren
+// heisst: ein klarer Namenstreffer kommt immer durch, ersetzt aber nie das
+// inhaltliche Suchen.
+const keywordBudget = (k: number): number => Math.max(1, Math.floor(k / 2));
+
+const ROOT_README_BONUS = `CASE WHEN lower(chunks.path) = 'readme.md' THEN ${SCORE_ROOT_README} ELSE 0 END`;
+
+const readmeOrder = (pathExpr: string): string =>
+  `CASE WHEN lower(${pathExpr}) = 'readme.md' THEN 0 ` +
+  `WHEN lower(${pathExpr}) LIKE '%readme.md' THEN 1 ELSE 2 END`;
+
 const keywordQuerySql = (withUrls: boolean, termCount: number): string => {
   const scoreParts: string[] = [];
   const whereParts: string[] = [];
   const columns = [
-    { name: "chunks.text", weight: 3 },
-    { name: "chunks.path", weight: 2 },
-    { name: "chunks.repo", weight: 2 },
+    { name: "chunks.repo", weight: SCORE_REPO },
+    { name: "chunks.path", weight: SCORE_PATH },
+    { name: "chunks.text", weight: SCORE_TEXT },
   ];
 
   for (let i = 0; i < termCount; i += 1) {
@@ -113,34 +157,53 @@ const keywordQuerySql = (withUrls: boolean, termCount: number): string => {
       whereParts.push(`lower(${column.name}) LIKE ? ESCAPE '\\'`);
     }
   }
+  scoreParts.push(ROOT_README_BONUS);
 
+  const score = `-(${scoreParts.join(" + ")})`;
   const urlColumns = withUrls
     ? ",\n          chunks.repo_url AS repoUrl,\n          chunks.source_url AS sourceUrl,\n          chunks.image_url AS imageUrl"
     : "";
+  const urlPassthrough = withUrls ? ", repoUrl, sourceUrl, imageUrl" : "";
 
+  // ROW_NUMBER statt "einfach viele Zeilen holen und in JS entdoppeln": ein
+  // gut passendes Repo liefert readme + Metadaten + Links-Block + Beispiele und
+  // wuerde sonst das ganze Budget allein fuellen. So ist pro Repo genau eine
+  // Zeile im Spiel, und zwar die beste.
   return `
-        SELECT
-          chunks.repo,
-          chunks.path${urlColumns},
-          chunks.text,
-          -(${scoreParts.join(" + ")}) AS distance
-        FROM chunks
-        WHERE ${whereParts.join(" OR ")}
-        ORDER BY distance, length(chunks.text)
+        SELECT repo, path, text, distance${urlPassthrough}
+        FROM (
+          SELECT
+            chunks.repo,
+            chunks.path${urlColumns},
+            chunks.text,
+            ${score} AS distance,
+            ROW_NUMBER() OVER (
+              PARTITION BY chunks.repo
+              ORDER BY ${score}, ${readmeOrder("chunks.path")}, length(chunks.text)
+            ) AS rank_in_repo
+          FROM chunks
+          WHERE ${whereParts.join(" OR ")}
+        )
+        WHERE rank_in_repo = 1 AND distance <= ${-KEYWORD_SCORE_FLOOR}
+        ORDER BY distance, ${readmeOrder("path")}, length(text)
         LIMIT ?
         `;
 };
 
+const keywordParams = (terms: string[]): string[] => {
+  const patterns = terms.map(term => `%${escapeLike(term)}%`);
+  // Dieselbe Musterliste dreimal: SELECT-Score, ORDER BY des Fensters, WHERE.
+  // SQLite kann im Fenster-ORDER-BY den Alias nicht wiederverwenden, deshalb
+  // steht der Score dort ein zweites Mal woertlich im SQL.
+  const score = patterns.flatMap(pattern => [pattern, pattern, pattern]);
+  return [...score, ...score, ...score];
+};
+
 const queryKeywordRows = (handle: Database, terms: string[], limit: number): Chunk[] => {
   if (terms.length === 0) return [];
-
-  const patterns = terms.map(term => `%${escapeLike(term)}%`);
-  const scoreParams = patterns.flatMap(pattern => [pattern, pattern, pattern]);
-  const whereParams = patterns.flatMap(pattern => [pattern, pattern, pattern]);
-
   return handle
     .query(keywordQuerySql(true, terms.length))
-    .all(...scoreParams, ...whereParams, limit) as Chunk[];
+    .all(...keywordParams(terms), limit) as Chunk[];
 };
 
 const queryLegacyKeywordRows = (
@@ -149,14 +212,11 @@ const queryLegacyKeywordRows = (
   limit: number
 ): Array<Omit<Chunk, "repoUrl" | "sourceUrl" | "imageUrl">> => {
   if (terms.length === 0) return [];
-
-  const patterns = terms.map(term => `%${escapeLike(term)}%`);
-  const scoreParams = patterns.flatMap(pattern => [pattern, pattern, pattern]);
-  const whereParams = patterns.flatMap(pattern => [pattern, pattern, pattern]);
-
   return handle
     .query(keywordQuerySql(false, terms.length))
-    .all(...scoreParams, ...whereParams, limit) as Array<Omit<Chunk, "repoUrl" | "sourceUrl" | "imageUrl">>;
+    .all(...keywordParams(terms), limit) as Array<
+      Omit<Chunk, "repoUrl" | "sourceUrl" | "imageUrl">
+    >;
 };
 
 const queryMaterialNumberRows = (
@@ -422,7 +482,7 @@ export const retrieve = async (
     const focusedRows = repoFocus
       ? queryRepoFocusedRows(handle, repoFocus.repo, repoFocus.readmePath, repoFocus.examplePath, k)
       : [];
-    const keywordRows = queryKeywordRows(handle, searchTerms, k);
+    const keywordRows = queryKeywordRows(handle, searchTerms, keywordBudget(k));
 
     let rows: Chunk[] = [];
     try {
@@ -465,7 +525,7 @@ export const retrieve = async (
       const focusedRows = repoFocus
         ? queryLegacyRepoFocusedRows(handle, repoFocus.repo, repoFocus.readmePath, repoFocus.examplePath, k)
         : [];
-      const keywordRows = queryLegacyKeywordRows(handle, searchTerms, k);
+      const keywordRows = queryLegacyKeywordRows(handle, searchTerms, keywordBudget(k));
 
       let rows: Array<Omit<Chunk, "repoUrl" | "sourceUrl" | "imageUrl">> = [];
       try {

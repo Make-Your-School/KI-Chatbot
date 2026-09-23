@@ -119,3 +119,30 @@ const cleanup = setInterval(() => {
   }
 }, 60 * 60 * 1000);
 cleanup.unref?.();
+
+// ---------- Read-only view for the statistics page ----------
+
+export type DailyUsage = { key: string; count: number };
+
+/**
+ * Today's counters for one scope, highest first.
+ *
+ * This is live in-memory state, not something stored: it is the same data the
+ * limiter checks, and it disappears on restart. The /stats page uses it to show
+ * how much of the day's budget is gone — the one thing the persisted counters
+ * cannot answer, because they have no notion of a limit.
+ *
+ * The keys are hashed codes, session ids and browser ids. Only the code scope's
+ * keys ever leave this module, and only far enough to be matched against the
+ * code list; nothing here is sent to a browser.
+ */
+export const usageToday = (scope: DailyScope): DailyUsage[] => {
+  const day = todayKey();
+  const prefix = `${scope}:`;
+  const out: DailyUsage[] = [];
+  for (const [mapKey, bucket] of chatBuckets) {
+    if (!mapKey.startsWith(prefix) || bucket.dayKey !== day || bucket.count <= 0) continue;
+    out.push({ key: mapKey.slice(prefix.length), count: bucket.count });
+  }
+  return out.sort((a, b) => b.count - a.count);
+};

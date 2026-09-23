@@ -124,13 +124,16 @@ const shouldHideLink = (href) => {
   return canonical ? HIDDEN_LINK_URLS.has(canonical) : false;
 };
 
-// The model is asked to end with a "Hilfreiche Links:" block, which we lift out
-// of the text and render as a card instead. It does not always write the
-// heading the same way — "**Hilfreiche Links:**", "### Hilfreiche Links" and
-// "Hilfreiche Links" all show up. Normalising first means the block is caught
-// in every spelling; missing it used to render the links twice, once raw in the
-// text and once in the card.
-const HELPFUL_LINKS_HEADING_RE = /^hilfreich(?:e|er)\s+link(?:s)?$/i;
+// The model is asked to end with a "Mehr dazu:" block, which we lift out of the
+// text and render as a card instead. It does not always write the heading the
+// same way — "**Mehr dazu:**", "### Mehr dazu" and "Mehr dazu" all show up.
+// Normalising first means the block is caught in every spelling; missing it
+// used to render the links twice, once raw in the text and once in the card.
+//
+// "Hilfreiche Links" was the old wording. It stays recognised: the prompt change
+// only shifts what the model tends to write, and a model that still writes the
+// old heading must not end up with a raw link list in the middle of the text.
+const HELPFUL_LINKS_HEADING_RE = /^(?:hilfreich(?:e|er)\s+link(?:s)?|mehr\s+dazu|weitere\s+links?)$/i;
 
 const normalizeHeadingLine = (line) =>
   line
@@ -275,6 +278,25 @@ const hostLabel = (href) => {
   } catch {
     return href;
   }
+};
+
+// Practically every link here points at the project's own GitHub org, so a
+// "github.com" line under every single card is pure noise. The chip is only
+// worth showing when it actually tells you something new — a video, a shop, a
+// manufacturer's wiki.
+const hostChipLabel = (href) => {
+  const host = hostLabel(href);
+  return host === "github.com" ? "" : host;
+};
+
+/** Appends the host chip to a card, unless there is nothing worth saying. */
+const appendHostChip = (node, href) => {
+  const text = hostChipLabel(href);
+  if (!text) return;
+  const host = document.createElement("span");
+  host.className = "resource-link-host";
+  host.textContent = text;
+  node.appendChild(host);
 };
 
 const renderInlineMarkdown = (text) => {
@@ -521,7 +543,7 @@ const makeResourcesBlock = (resources) => {
   wrap.className = "resources";
 
   const label = document.createElement("strong");
-  label.textContent = "Hilfreiche Links:";
+  label.textContent = "Mehr dazu:";
   wrap.appendChild(label);
 
   const list = document.createElement("div");
@@ -545,12 +567,8 @@ const makeResourcesBlock = (resources) => {
     title.className = "resource-link-label";
     title.textContent = resource.label || safeHref;
 
-    const host = document.createElement("span");
-    host.className = "resource-link-host";
-    host.textContent = hostLabel(safeHref);
-
     link.appendChild(title);
-    link.appendChild(host);
+    appendHostChip(link, safeHref);
     list.appendChild(link);
   }
 
@@ -564,7 +582,7 @@ const makeSourcesBlock = (sources) => {
   const wrap = document.createElement("div");
   wrap.className = "sources";
   const label = document.createElement("strong");
-  label.textContent = "Kontextquellen:";
+  label.textContent = "Grundlage der Antwort:";
   wrap.appendChild(label);
   const list = document.createElement("div");
   list.className = "resource-list";
@@ -587,12 +605,8 @@ const makeSourcesBlock = (sources) => {
       title.className = "resource-link-label source-link-label";
       title.textContent = labelText;
 
-      const host = document.createElement("span");
-      host.className = "resource-link-host";
-      host.textContent = hostLabel(href);
-
       link.appendChild(title);
-      link.appendChild(host);
+      appendHostChip(link, href);
       list.appendChild(link);
     } else {
       const item = document.createElement("div");

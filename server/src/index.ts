@@ -16,12 +16,12 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config } from "./config.ts";
-import { validateCode, issueSession, verifySession, lookupByHash } from "./auth.ts";
+import { validateCode, issueSession, verifySession, lookupByHash, listCodes } from "./auth.ts";
 import * as stats from "./stats.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
 import { getEmbedder } from "./embeddings.ts";
 import { getModels, modelsFilePath } from "./models.ts";
-import { tryConsumeDaily, tryConsumeLogin, type DailyScope } from "./ratelimit.ts";
+import { tryConsumeDaily, tryConsumeLogin, usageToday, type DailyScope } from "./ratelimit.ts";
 
 const app = new Hono();
 
@@ -140,8 +140,55 @@ app.get("/api/stats", c => {
   if (record.scope !== "stats") {
     return c.json({ error: "Dieser Code hat keinen Zugriff auf die Statistik." }, 403);
   }
-  return c.json(stats.summary());
+  return c.json({ ...stats.summary(), quota: quotaToday() });
 });
+
+/**
+ * How much of today's budget is used up — the "how full is the tank" view.
+ *
+ * This is deliberately NOT part of stats.ts: the counters there are persisted
+ * day totals with no notion of a ceiling, while this is live limiter state that
+ * resets on restart. Mixing them would make the /stats page claim a history it
+ * does not have.
+ *
+ * The limiter keys codes by their full hash; the code list only ever exposes
+ * the first 8 characters. Matching on that prefix keeps the full hash inside
+ * the server — it is not needed for a display, and there is no reason to hand
+ * a browser a value that a lookup table could turn back into a code.
+ */
+const quotaToday = () => {
+  const codeUsage = new Map(usageToday("code").map(u => [u.key.slice(0, 8), u.count]));
+  const now = Math.floor(Date.now() / 1000);
+
+  const codes = listCodes()
+    .filter(code => code.scope === "chat" && code.expires_at > now)
+    .map(code => ({
+      school: code.school,
+      label: code.label,
+      used: codeUsage.get(code.hashPrefix) ?? 0,
+      limit: code.daily_limit ?? config.rateLimit.perCodePerDay,
+    }))
+    .sort((a, b) => b.used - a.used || a.school.localeCompare(b.school, "de"));
+
+  // Individual sessions and browsers are not listed. "How many were active and
+  // what was the busiest one" is all the page needs to tell whether the
+  // per-person limits are anywhere near biting.
+  const spread = (scope: "session" | "browser", limit: number) => {
+    const rows = usageToday(scope);
+    return {
+      active: rows.length,
+      used: rows.reduce((sum, row) => sum + row.count, 0),
+      busiest: rows[0]?.count ?? 0,
+      limit,
+    };
+  };
+
+  return {
+    codes,
+    sessions: spread("session", config.rateLimit.perSessionPerDay),
+    browsers: spread("browser", config.rateLimit.perBrowserPerDay),
+  };
+};
 
 app.post("/api/chat", async c => {
   const session = verifySession(getCookie(c, config.auth.cookieName));

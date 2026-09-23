@@ -10,3 +10,6 @@ server/data/
 dist/
 build/
 .claude/
+
+# Persoenliche Anleitungen, nicht im Repo
+anleitungen/
