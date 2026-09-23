@@ -557,11 +557,39 @@ const safeImageSrc = (src) => {
   return safeUrl(src);
 };
 
-// Das Bild einer Karte. Faellt es aus (tote URL, kein Vorschaubild), verschwindet
-// nur das Bild und die Karte wird wieder zur normalen Textkarte — kein Loch.
-const attachThumb = (node, src) => {
+// Das kleine Seitensymbol, links oben in der Ecke der Karte. Fuer Links, die
+// kein Vorschaubild hergeben — arduino.cc etwa hat kein og:image, aber ein
+// Logo, und das sagt schon, wo der Link hinfuehrt.
+const attachIcon = (node, src) => {
   const href = safeImageSrc(src);
   if (!href) return;
+  node.classList.add("has-icon");
+  const img = document.createElement("img");
+  img.className = "resource-icon";
+  img.alt = "";
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.addEventListener("error", () => {
+    img.remove();
+    node.classList.remove("has-icon");
+  });
+  img.src = href;
+  node.prepend(img);
+};
+
+// Das Bild einer Karte, in zwei Stufen: grosses Vorschaubild, sonst das kleine
+// Seitensymbol, sonst reiner Text.
+//
+// Der Server weiss beim Zusammenstellen der Antwort noch nicht, was eine fremde
+// Seite hergibt — er muesste sie dafuer erst abrufen und die Antwort so lange
+// aufhalten. Also schickt er beide Adressen mit und der Browser probiert sie
+// der Reihe nach durch.
+const attachThumb = (node, src, iconSrc) => {
+  const href = safeImageSrc(src);
+  if (!href) {
+    attachIcon(node, iconSrc);
+    return;
+  }
   node.classList.add("has-thumb");
   const img = document.createElement("img");
   img.className = "resource-thumb";
@@ -571,6 +599,7 @@ const attachThumb = (node, src) => {
   img.addEventListener("error", () => {
     img.remove();
     node.classList.remove("has-thumb");
+    attachIcon(node, iconSrc);
   });
   img.src = href;
   node.prepend(img);
@@ -637,7 +666,7 @@ const makeResourceLink = (resource, safeHref) => {
   // Repo-Karten tragen das Foto des Bauteils, Video-Karten das Vorschaubild.
   // Ohne das unterscheiden sich die beiden Arduino-Karten um drei Zeichen im
   // Text, und fuenf Video-Karten sehen alle gleich aus.
-  attachThumb(link, resource?.image);
+  attachThumb(link, resource?.image, resource?.icon);
   return link;
 };
 

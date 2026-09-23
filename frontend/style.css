@@ -884,3 +884,16 @@ button, .link-btn {
 .resource-videogroup[open] .resource-videolist {
   display: flex;
 }
+
+/* Seitensymbol links oben in der Karte — für Links ohne Vorschaubild. */
+.resource-link.has-icon {
+  padding-top: .45rem;
+}
+.resource-icon {
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-bottom: .3rem;
+  object-fit: contain;
+  border-radius: 3px;
+}

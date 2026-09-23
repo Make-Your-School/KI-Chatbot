@@ -65,8 +65,10 @@ type ResourceLink = {
   label: string;
   url: string;
   kind: ResourceKind;
-  /** Bild des Bauteils — nur bei Repo-Links, damit die Karte zeigt, worum es geht. */
+  /** Grosses Bild fuer die Karte: Bauteilfoto, Video-Vorschau oder og:image. */
   image?: string;
+  /** Kleines Seitensymbol. Rueckfallstufe, wenn es kein grosses Bild gibt. */
+  icon?: string;
   /** Repo-Name, damit der Aufrufer weiss, welches Bild schon vergeben ist. */
   repo?: string;
 };
@@ -446,9 +448,11 @@ const extractResources = (
         : kind === "video"
           ? videoThumbPath(url)
           // Alles Uebrige — Produktseite, Herstellerseite, Wiki — bekommt die
-          // Vorschau der Seite selbst, sofern sie eine anbietet. Hat sie keine,
-          // antwortet der Endpunkt mit 404 und die Karte bleibt Text.
+          // Vorschau der Seite selbst, sofern sie eine anbietet.
           : `/api/link-preview/${previewId(url)}`,
+      // Und wenn nicht, wenigstens das Logo der Seite. Zwei Stufen nach unten:
+      // Vorschaubild, sonst Symbol, sonst reiner Text.
+      icon: known || kind === "video" ? undefined : `/api/link-icon/${previewId(url)}`,
       repo: known?.repo,
       order,
     });
@@ -510,6 +514,7 @@ const extractResources = (
       url: resource.url,
       kind: resource.kind,
       image: resource.image,
+      icon: resource.icon,
       repo: resource.repo,
     });
     used[resource.kind] += 1;

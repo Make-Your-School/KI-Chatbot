@@ -7,6 +7,7 @@
 //   GET  /api/video-thumb/:id — YouTube thumbnail, proxied so no request from
 //                        a pupil's browser ever reaches Google
 //   GET  /api/link-preview/:id — og:image of a linked page, same reasoning
+//   GET  /api/link-icon/:id    — that page's favicon, for links without one
 //   GET  /api/health   — liveness probe
 //   GET  /*            — static frontend files
 //
@@ -15,14 +16,14 @@
 //   - No conversation storage of any kind
 //   - No user IDs beyond the code hash (which is itself hashed from the code)
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { serveStatic } from "hono/bun";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config } from "./config.ts";
 import { validateCode, issueSession, verifySession, lookupByHash, listCodes } from "./auth.ts";
 import * as stats from "./stats.ts";
 import { getThumbnail, VIDEO_ID_RE } from "./videoThumbs.ts";
-import { getPreview, PREVIEW_ID_RE } from "./linkPreviews.ts";
+import { getAsset, PREVIEW_ID_RE, type AssetKind } from "./linkPreviews.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
 import { getEmbedder } from "./embeddings.ts";
 import { getModels, modelsFilePath } from "./models.ts";
@@ -363,22 +364,28 @@ app.get("/api/video-thumb/:id", async c => {
 // Die Kennung laesst sich nur aufloesen, wenn die Adresse in den eingebetteten
 // Repos verlinkt ist — siehe linkPreviews.ts. Damit ist das kein offener
 // Abrufdienst, ueber den sich beliebige Adressen ansteuern liessen.
-app.get("/api/link-preview/:id", async c => {
+const serveLinkAsset = async (c: Context, kind: AssetKind) => {
   if (!verifySession(getCookie(c, config.auth.cookieName))) {
     return c.json({ error: "Nicht eingeloggt." }, 401);
   }
-  const id = c.req.param("id");
+  // Der generische Context kennt die Route nicht, deshalb kann :id hier
+  // theoretisch fehlen. Die Pruefung unten faengt das mit ab.
+  const id = c.req.param("id") ?? "";
   if (!PREVIEW_ID_RE.test(id)) return c.json({ error: "Ungültige Kennung." }, 400);
 
-  const preview = await getPreview(id);
-  // Viele Seiten haben kein Vorschaubild. 404 heisst hier "gibt es nicht" und
-  // die Karte im Browser bleibt eine Textkarte.
-  if (!preview) return c.json({ error: "Keine Vorschau." }, 404);
+  const asset = await getAsset(id, kind);
+  // Viele Seiten haben kein Vorschaubild, manche nicht mal ein Logo. 404 heisst
+  // hier "gibt es nicht"; die Karte im Browser faellt eine Stufe zurueck —
+  // Vorschau auf Symbol, Symbol auf reinen Text.
+  if (!asset) return c.json({ error: "Nicht vorhanden." }, 404);
 
-  c.header("Content-Type", preview.contentType);
+  c.header("Content-Type", asset.contentType);
   c.header("Cache-Control", "private, max-age=604800");
-  return c.body(new Uint8Array(preview.body));
-});
+  return c.body(new Uint8Array(asset.body));
+};
+
+app.get("/api/link-preview/:id", c => serveLinkAsset(c, "preview"));
+app.get("/api/link-icon/:id", c => serveLinkAsset(c, "icon"));
 
 app.get("/stats", serveStatic({ path: `${config.frontend.distPath}/stats.html` }));
 app.use("/*", serveStatic({ root: config.frontend.distPath }));

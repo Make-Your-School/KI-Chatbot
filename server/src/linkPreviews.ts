@@ -29,6 +29,8 @@ mkdirSync(config.linkPreviews.dir, { recursive: true });
 export const PREVIEW_ID_RE = /^[0-9a-f]{16}$/;
 
 const MIN_PREVIEW_BYTES = 8 * 1024;
+// Ein Favicon darf winzig sein — es wird ja auch nur winzig angezeigt.
+const MIN_ICON_BYTES = 64;
 
 /** Kurze, stabile Kennung einer Adresse. Nur ein Namensschild, kein Geheimnis. */
 export const previewId = (url: string): string =>
@@ -49,6 +51,8 @@ const resolveId = (id: string): string | null => {
   return allowed.get(id) ?? null;
 };
 
+// Nach Art getrennt: dass eine Seite kein Vorschaubild hat, heisst nicht, dass
+// sie auch kein Logo hat.
 const failed = new Map<string, number>();
 const FAILURE_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -62,7 +66,11 @@ const recentlyFailed = (id: string): boolean => {
   return true;
 };
 
-const cachePath = (id: string): string => join(config.linkPreviews.dir, `${id}.img`);
+/** Was geholt wird: das grosse Vorschaubild oder das kleine Seitensymbol. */
+export type AssetKind = "preview" | "icon";
+
+const cachePath = (id: string, kind: AssetKind): string =>
+  join(config.linkPreviews.dir, kind === "icon" ? `${id}.icon` : `${id}.img`);
 
 const META_RE =
   /<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*>/gi;
@@ -99,6 +107,47 @@ const fetchLimited = async (url: string, maxBytes: number): Promise<Buffer | nul
   return buf.length > maxBytes ? null : buf;
 };
 
+const ICON_LINK_RE = /<link[^>]+rel\s*=\s*["'][^"']*icon[^"']*["'][^>]*>/gi;
+const SIZES_RE = /sizes\s*=\s*["'](\d+)x\d+["']/i;
+
+/**
+ * Das Seitensymbol — das kleine Logo, das ein Browser im Tab zeigt.
+ *
+ * Fuer Seiten ohne Vorschaubild ist das der Rest an Wiedererkennung, den es
+ * gibt: arduino.cc hat kein og:image, aber ein Logo. Als Symbol in der Ecke
+ * der Karte sagt es trotzdem sofort, wo der Link hinfuehrt.
+ *
+ * Groesstes zuerst — ein 180er apple-touch-icon sieht besser aus als ein
+ * 16x16-Favicon, das auf Kartengroesse nur ein Klecks waere.
+ */
+const findIconUrl = (html: string, pageUrl: string): string | null => {
+  const candidates: Array<{ url: string; size: number }> = [];
+  for (const tag of html.matchAll(ICON_LINK_RE)) {
+    const raw = tag[0].match(CONTENT_RE)?.[1] ?? tag[0].match(/href\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!raw) continue;
+    try {
+      const resolved = new URL(raw.trim(), pageUrl);
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") continue;
+      const declared = Number(tag[0].match(SIZES_RE)?.[1] ?? 0);
+      // Ohne Groessenangabe: apple-touch-icon ist erfahrungsgemaess das
+      // groessere, sonst bleibt es bei "unbekannt".
+      const size = declared || (/apple-touch/i.test(tag[0]) ? 180 : 32);
+      candidates.push({ url: resolved.toString(), size });
+    } catch {
+      /* unbrauchbare Adresse */
+    }
+  }
+  candidates.sort((a, b) => b.size - a.size);
+  if (candidates[0]) return candidates[0].url;
+
+  // Letzter Versuch: der Ort, an dem ein Favicon per Konvention liegt.
+  try {
+    return new URL("/favicon.ico", pageUrl).toString();
+  } catch {
+    return null;
+  }
+};
+
 export type Preview = { body: Buffer; contentType: string };
 
 const CONTENT_TYPE_PATH = join(config.linkPreviews.dir, "types.json");
@@ -114,9 +163,9 @@ const loadTypes = async (): Promise<Record<string, string>> => {
   return contentTypes;
 };
 
-const rememberType = async (id: string, type: string): Promise<void> => {
+const rememberType = async (key: string, type: string): Promise<void> => {
   const types = await loadTypes();
-  types[id] = type;
+  types[key] = type;
   try {
     await writeFile(CONTENT_TYPE_PATH, JSON.stringify(types));
   } catch {
@@ -124,19 +173,27 @@ const rememberType = async (id: string, type: string): Promise<void> => {
   }
 };
 
-export const getPreview = async (id: string): Promise<Preview | null> => {
+/**
+ * Vorschaubild oder Seitensymbol einer verlinkten Seite.
+ *
+ * Beide Arten laufen durch denselben Ablauf — Erlaubnisliste, Ablage auf der
+ * Platte, Fehlergedaechtnis —, sie unterscheiden sich nur darin, welches Bild
+ * aus der Seite gelesen wird und wie gross es mindestens sein muss.
+ */
+export const getAsset = async (id: string, kind: AssetKind): Promise<Preview | null> => {
   if (!PREVIEW_ID_RE.test(id)) return null;
 
-  const path = cachePath(id);
+  const key = `${kind}:${id}`;
+  const path = cachePath(id, kind);
   if (existsSync(path)) {
     try {
       const types = await loadTypes();
-      return { body: await readFile(path), contentType: types[id] ?? "image/jpeg" };
+      return { body: await readFile(path), contentType: types[key] ?? "image/jpeg" };
     } catch {
       /* unlesbar — unten neu holen */
     }
   }
-  if (recentlyFailed(id)) return null;
+  if (recentlyFailed(key)) return null;
 
   const pageUrl = resolveId(id);
   if (!pageUrl) return null;
@@ -144,16 +201,19 @@ export const getPreview = async (id: string): Promise<Preview | null> => {
   try {
     const html = await fetchLimited(pageUrl, config.linkPreviews.maxHtmlBytes);
     if (!html) throw new Error("page not fetchable");
+    const page = html.toString("utf8");
 
-    const imageUrl = findPreviewImage(html.toString("utf8"), pageUrl);
-    if (!imageUrl) throw new Error("no og:image");
+    const imageUrl =
+      kind === "icon" ? findIconUrl(page, pageUrl) : findPreviewImage(page, pageUrl);
+    if (!imageUrl) throw new Error(kind === "icon" ? "no icon link" : "no og:image");
 
     const image = await fetchLimited(imageUrl, config.linkPreviews.maxImageBytes);
-    // Untergrenze gegen Platzhalter: arduino.cc zum Beispiel gibt als og:image
-    // ein 1 KB grosses Logo an. In einer 9,5rem breiten Karte waere das ein
-    // verpixelter Klecks — dann lieber gar keine Vorschau und eine saubere
-    // Textkarte. Echte Produktfotos liegen bei 100 KB aufwaerts.
-    if (!image || image.length < MIN_PREVIEW_BYTES) throw new Error("image not usable");
+    // Untergrenzen sind verschieden: ein Vorschaubild soll eine Karte fuellen,
+    // ein Symbol nur 20 Pixel breit sein. arduino.cc gibt als og:image ein 1 KB
+    // grosses Logo an — als Vorschau ein verpixelter Klecks, als Symbol genau
+    // richtig.
+    const floor = kind === "icon" ? MIN_ICON_BYTES : MIN_PREVIEW_BYTES;
+    if (!image || image.length < floor) throw new Error("image too small");
 
     // Anhand der ersten Bytes, nicht anhand des gemeldeten Typs: ausgeliefert
     // wird nur, was wirklich ein Bild ist.
@@ -161,12 +221,12 @@ export const getPreview = async (id: string): Promise<Preview | null> => {
     if (!contentType) throw new Error("not an image");
 
     await writeFile(path, image);
-    await rememberType(id, contentType);
-    debugLog("preview", "fetched", { id, bytes: image.length, contentType });
+    await rememberType(key, contentType);
+    debugLog("preview", "fetched", { id, kind, bytes: image.length, contentType });
     return { body: image, contentType };
   } catch (err) {
-    failed.set(id, Date.now());
-    debugLog("preview", "failed", { id, message: (err as Error).message });
+    failed.set(key, Date.now());
+    debugLog("preview", "failed", { id, kind, message: (err as Error).message });
     return null;
   }
 };
@@ -174,6 +234,13 @@ export const getPreview = async (id: string): Promise<Preview | null> => {
 /** Bildformat an der Signatur erkennen. null heisst "kein Bild". */
 const sniffImageType = (buf: Buffer): string | null => {
   if (buf.length < 12) return null;
+  // Favicons sind haeufig .ico oder .svg. SVG in einem <img> kann keine Skripte
+  // ausfuehren, ist an dieser Stelle also unbedenklich.
+  if (buf.subarray(0, 4).toString("hex") === "00000100") return "image/x-icon";
+  const head = buf.subarray(0, 300).toString("utf8").trimStart().toLowerCase();
+  if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {
+    return "image/svg+xml";
+  }
   if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
   if (buf.subarray(0, 8).toString("hex") === "89504e470d0a1a0a") return "image/png";
   if (buf.subarray(0, 3).toString("ascii") === "GIF") return "image/gif";
