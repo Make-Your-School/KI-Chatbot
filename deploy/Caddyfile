@@ -26,6 +26,14 @@ ki-hackdays.de, www.ki-hackdays.de {
 		X-Frame-Options "DENY"
 		# Don't leak the Caddy version
 		-Server
+
+		# The frontend has no inline scripts or styles, so everything except
+		# images can be locked to same-origin. Images have to stay open to
+		# https: because they are raw URLs from arbitrary material repos.
+		# If you ever add an inline <script> or a CDN, this header needs to
+		# change or the page will silently stop working — check the browser
+		# console after any frontend change.
+		Content-Security-Policy "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	}
 
 	# Basic request-size ceiling. SSE responses can be long, but POSTed chat

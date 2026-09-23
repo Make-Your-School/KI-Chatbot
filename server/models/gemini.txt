@@ -15,22 +15,55 @@
 #
 # Wo finde ich Modell-IDs?
 #   https://ai.google.dev/gemini-api/docs/models  → Spalte "Model code"
+#   Free-Tier-Verfügbarkeit: https://ai.google.dev/gemini-api/docs/pricing
+#   Deine echten Limits:     https://aistudio.google.com/rate-limit
 #
-# Reihenfolge für diesen Chat:
-#   - zuerst alltagstaugliche Textmodelle für viele kurze Schüler*innen-Fragen
-#   - dann kleinere / offenere Fallbacks
-#   - Gemini 2.0 Flash ist absichtlich entfernt, weil es laut Google veraltet ist
+# ---------------------------------------------------------------------------
+# Stand 23.09.2026 — Liste aktualisiert.
+#
+# Warum: die vorherige Liste war veraltet.
+#   - gemini-3.1-flash-lite-preview  → es gibt jetzt eine STABILE Version
+#                                      ohne "-preview". Preview-Modelle werden
+#                                      irgendwann abgeschaltet.
+#   - gemini-2.5-flash / -flash-lite → Google schränkt die 2.5er-Generation auf
+#                                      Bestandsnutzer ein. Läuft bei dir evtl.
+#                                      noch, ist aber kein Fundament mehr.
+#   - gemma-3-*                      → durch Gemma 4 abgelöst.
+#
+# Reihenfolge wie gehabt:
+#   - zuerst Flash-Lite: höhere Anfragen-pro-Minute-Quote, ideal für viele
+#     kurze Schüler*innen-Fragen gleichzeitig
+#   - dann die stärkeren Flash-Modelle
+#   - dann offene Gemma-Modelle als Rückfall
+#
+# Alle folgenden Modelle haben laut Google einen Free Tier.
+# Im Chat steht unter jeder Antwort, welches Modell tatsächlich geliefert hat —
+# damit kannst du direkt prüfen, ob die Reihenfolge so aufgeht wie gedacht.
+# ---------------------------------------------------------------------------
 
-# Hohe Free-Tier-Quote, schnell, für den Schulalltag als Erstwahl sinnvoll
-gemini-3.1-flash-lite-preview
+# Erstwahl: hohe Quote, schnell, günstig im Free Tier
+gemini-3.5-flash-lite
+gemini-3.1-flash-lite
 
-# Stärkere allgemeine Chat-Modelle
-gemini-2.5-flash
-gemini-3-flash-preview
-gemini-2.5-flash-lite
+# Stärker, wenn die Lite-Modelle dicht sind
+gemini-3.5-flash
+gemini-3.6-flash
+gemini-3.7-flash
+gemini-3.8-flash
 
-# Open-weight Fallbacks in absteigender Größe
-gemma-3-27b-it
-gemma-3-12b-it
-gemma-3-4b-it
-gemma-3-1b-it
+# Offene Gemma-4-Modelle als Rückfall
+gemma-4-31b-it
+gemma-4-26b-a4b-it
+gemma-4-4b-it
+
+# ---------------------------------------------------------------------------
+# ALTE LISTE (vor 23.09.2026) — zum Zurückschalten einfach wieder einkommentieren
+# ---------------------------------------------------------------------------
+# gemini-3.1-flash-lite-preview
+# gemini-2.5-flash
+# gemini-3-flash-preview
+# gemini-2.5-flash-lite
+# gemma-3-27b-it
+# gemma-3-12b-it
+# gemma-3-4b-it
+# gemma-3-1b-it

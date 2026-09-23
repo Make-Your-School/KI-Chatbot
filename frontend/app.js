@@ -22,6 +22,24 @@ const resetBtn = $("reset-btn");
 const logoutBtn = $("logout-btn");
 
 const STORAGE_KEY = "mys-history";
+const CLIENT_ID_KEY = "mys-client";
+
+// Random per-browser id, sent with each chat request as the key for the
+// per-browser daily limit. It says nothing about who you are and is never
+// stored server-side — the rate limiter keeps it in memory until midnight.
+// If localStorage is unavailable the server falls back to the session id.
+const clientId = (() => {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) {
+      id = (crypto.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, "");
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+})();
 const STARTER_PROMPTS = [
   "Ich habe noch nie mit Arduino gearbeitet. Wie starte ich am einfachsten?",
   "Wie schließe ich einen Grove-Sensor an ein Arduino-Board an?",
@@ -106,7 +124,38 @@ const shouldHideLink = (href) => {
   return canonical ? HIDDEN_LINK_URLS.has(canonical) : false;
 };
 
-const HELPFUL_LINKS_HEADING_RE = /^hilfreich(?:e|er)\s+link(?:s)?:\s*$/i;
+// The model is asked to end with a "Hilfreiche Links:" block, which we lift out
+// of the text and render as a card instead. It does not always write the
+// heading the same way — "**Hilfreiche Links:**", "### Hilfreiche Links" and
+// "Hilfreiche Links" all show up. Normalising first means the block is caught
+// in every spelling; missing it used to render the links twice, once raw in the
+// text and once in the card.
+const HELPFUL_LINKS_HEADING_RE = /^hilfreich(?:e|er)\s+link(?:s)?$/i;
+
+const normalizeHeadingLine = (line) =>
+  line
+    .trim()
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/^\*{1,3}\s*/, "")
+    .replace(/\*{1,3}$/, "")
+    .replace(/\s*:\s*$/, "")
+    .replace(/\*{1,3}$/, "")
+    .trim();
+
+const isResourceHeading = (line) =>
+  HELPFUL_LINKS_HEADING_RE.test(normalizeHeadingLine(line));
+
+// Used while tokens are still streaming in: cut everything from the heading
+// onward instead of parsing it. A half-arrived link list parses as "not a link
+// block", so the full extractor would show the raw heading for a moment and
+// then yank it away again — visible as flicker.
+const stripResourceTail = (text) => {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (isResourceHeading(lines[i])) return lines.slice(0, i).join("\n").trimEnd();
+  }
+  return text;
+};
 
 const parseTextResourceLine = (line) => {
   const stripped = line.replace(/^[-*]\s+/, "").trim();
@@ -140,7 +189,7 @@ const extractTextResources = (text) => {
   let headingIndex = -1;
 
   for (let i = 0; i < lines.length; i += 1) {
-    if (HELPFUL_LINKS_HEADING_RE.test(lines[i].trim())) headingIndex = i;
+    if (isResourceHeading(lines[i])) headingIndex = i;
   }
 
   if (headingIndex < 0) return { content: text, resources: [] };
@@ -252,37 +301,59 @@ const renderInlineMarkdown = (text) => {
   return html;
 };
 
+// Chat bubbles are narrow, so h1/h2 would dwarf everything around them. Model
+// headings are shifted down two levels and clamped.
+const MAX_HEADING_LEVEL = 6;
+
 const renderAssistantMarkdown = (text) => {
   if (!text.trim()) return "";
 
-  const lines = text.replace(/\r\n/g, "\n").trim().split("\n");
+  const lines = text.replace(/\r\n/g, "\n").replace(/\t/g, "  ").trim().split("\n");
   const blocks = [];
   let paragraph = [];
-  let listType = null;
-  let listItems = [];
-  let currentListItem = null;
   let codeFence = null;
   let codeLines = [];
+  let afterBlankLine = false;
+
+  // Nested lists, one stack entry per indentation level. `open` is the item
+  // currently being built — it stays open so that a lazy continuation line or a
+  // deeper sub-list can still be folded into it.
+  let listStack = [];
+
+  const closeItem = (level) => {
+    if (level.open === null) return;
+    level.items.push(
+      `<li>${renderInlineMarkdown(level.open)}${level.children.join("")}</li>`
+    );
+    level.open = null;
+    level.children = [];
+  };
+
+  const openLevel = (type, indent, content) => {
+    listStack.push({ type, indent, items: [], open: content, children: [] });
+  };
+
+  // Close levels until only `depth` remain, folding each finished list into the
+  // open item of its parent — or into the block stream at the top level.
+  const closeListsTo = (depth) => {
+    while (listStack.length > depth) {
+      const level = listStack.pop();
+      closeItem(level);
+      if (level.items.length === 0) continue;
+      const html = `<${level.type}>${level.items.join("")}</${level.type}>`;
+      const parent = listStack[listStack.length - 1];
+      if (!parent) blocks.push(html);
+      else if (parent.open !== null) parent.children.push(html);
+      else parent.items.push(html);
+    }
+  };
+
+  const flushLists = () => closeListsTo(0);
 
   const flushParagraph = () => {
     if (paragraph.length === 0) return;
     blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
     paragraph = [];
-  };
-
-  const flushList = () => {
-    if (!listType) return;
-    if (currentListItem) {
-      listItems.push(currentListItem.join(" ").trim());
-      currentListItem = null;
-    }
-    blocks.push(
-      `<${listType}>${listItems
-        .map((item) => `<li>${renderInlineMarkdown(item)}</li>`)
-        .join("")}</${listType}>`
-    );
-    listType = null;
-    listItems = [];
   };
 
   const flushCodeBlock = () => {
@@ -297,18 +368,17 @@ const renderAssistantMarkdown = (text) => {
 
   for (const rawLine of lines) {
     const trimmed = rawLine.trim();
-    const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
-    const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
 
     if (trimmed.startsWith("```")) {
       if (codeFence === null) {
         flushParagraph();
-        flushList();
+        flushLists();
         codeFence = trimmed.slice(3).trim();
         codeLines = [];
       } else {
         flushCodeBlock();
       }
+      afterBlankLine = false;
       continue;
     }
 
@@ -319,34 +389,74 @@ const renderAssistantMarkdown = (text) => {
 
     if (!trimmed) {
       flushParagraph();
-      flushList();
+      // A blank line does NOT close the list — markdown allows loose lists with
+      // blank lines between items. It only marks that the next plain line
+      // starts a new paragraph instead of continuing the last list item.
+      afterBlankLine = true;
       continue;
     }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushLists();
+      const level = Math.min(headingMatch[1].length + 2, MAX_HEADING_LEVEL);
+      blocks.push(
+        `<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`
+      );
+      afterBlankLine = false;
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+[.)]\s+(.*)$/);
+    const unorderedMatch = trimmed.match(/^[-*+]\s+(.*)$/);
 
     if (orderedMatch || unorderedMatch) {
       flushParagraph();
-      const nextType = orderedMatch ? "ol" : "ul";
+      const type = orderedMatch ? "ol" : "ul";
       const content = (orderedMatch?.[1] ?? unorderedMatch?.[1] ?? "").trim();
+      const indent = rawLine.length - rawLine.trimStart().length;
 
-      if (listType && listType !== nextType) flushList();
-      if (!listType) listType = nextType;
+      // Dedent: close every level that sits deeper than this line.
+      while (listStack.length > 0 && indent < listStack[listStack.length - 1].indent) {
+        closeListsTo(listStack.length - 1);
+      }
 
-      if (currentListItem) listItems.push(currentListItem.join(" ").trim());
-      currentListItem = [content];
+      const top = listStack[listStack.length - 1];
+      if (!top || indent > top.indent) {
+        openLevel(type, indent, content);
+      } else if (top.type !== type) {
+        // Same level, different marker — that's a new list, not a new item.
+        closeListsTo(listStack.length - 1);
+        openLevel(type, indent, content);
+      } else {
+        closeItem(top);
+        top.open = content;
+        top.children = [];
+      }
+      afterBlankLine = false;
       continue;
     }
 
-    if (listType) {
-      if (!currentListItem) currentListItem = [trimmed];
-      else currentListItem.push(trimmed);
+    if (listStack.length > 0) {
+      if (afterBlankLine) {
+        flushLists();
+        paragraph.push(trimmed);
+      } else {
+        // Lazy continuation of the current item.
+        const top = listStack[listStack.length - 1];
+        top.open = top.open === null ? trimmed : `${top.open} ${trimmed}`;
+      }
+      afterBlankLine = false;
       continue;
     }
 
     paragraph.push(trimmed);
+    afterBlankLine = false;
   }
 
   flushParagraph();
-  flushList();
+  flushLists();
   flushCodeBlock();
 
   if (blocks.length === 0) {
@@ -356,12 +466,17 @@ const renderAssistantMarkdown = (text) => {
   return blocks.join("");
 };
 
-const setBubbleContent = (bubble, role, text) => {
+const setBubbleContent = (bubble, role, text, { streaming = false } = {}) => {
   const contentEl = bubble.querySelector(".bubble-content");
   if (!contentEl) return;
 
   if (role === "assistant") {
-    contentEl.innerHTML = renderAssistantMarkdown(getAssistantPresentation(text).content);
+    // While tokens are arriving the link block is only cut off, not parsed —
+    // parsing a half-written list makes the block appear and vanish again.
+    const content = streaming
+      ? stripResourceTail(text)
+      : getAssistantPresentation(text).content;
+    contentEl.innerHTML = renderAssistantMarkdown(content);
     return;
   }
 
@@ -511,10 +626,13 @@ const makeImageBlock = (image) => {
   link.rel = "noreferrer";
 
   const img = document.createElement("img");
-  img.src = safeHref;
   img.alt = `Bild aus ${image.repo}/${image.path}`;
   img.loading = "lazy";
   img.decoding = "async";
+  // Raw URLs go stale (file renamed, repo gone private, branch called master).
+  // Without this the bubble shows a broken-image icon instead of nothing.
+  img.addEventListener("error", () => wrap.remove());
+  img.src = safeHref;
 
   link.appendChild(img);
   wrap.appendChild(link);
@@ -550,6 +668,14 @@ const makeExampleBlock = (example) => {
   code.textContent = example.code;
   pre.appendChild(code);
   wrap.appendChild(pre);
+
+  if (example.truncated) {
+    const note = document.createElement("div");
+    note.className = "example-code-note";
+    note.textContent = "Gekürzt — die vollständige Datei steht im verlinkten Repo.";
+    wrap.appendChild(note);
+  }
+
   return wrap;
 };
 
@@ -636,11 +762,7 @@ const checkSession = async () => {
   }
 };
 
-loginForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  loginError.hidden = true;
-  const code = codeInput.value.trim();
-  if (!code) return;
+const submitCode = async (code) => {
   try {
     const resp = await fetch("/api/login", {
       method: "POST",
@@ -649,25 +771,38 @@ loginForm.addEventListener("submit", async (e) => {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || !body.ok) {
-      loginError.textContent = body.error || "Login fehlgeschlagen.";
-      loginError.hidden = false;
-      return;
+      return { ok: false, error: body.error || "Login fehlgeschlagen." };
     }
-    codeInput.value = "";
-    showView("chat");
-  } catch (err) {
-    loginError.textContent = "Netzwerkfehler. Versuch es gleich noch mal.";
-    loginError.hidden = false;
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Netzwerkfehler. Versuch es gleich noch mal." };
   }
+};
+
+const showLoginError = (message) => {
+  loginError.textContent = message;
+  loginError.hidden = false;
+};
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginError.hidden = true;
+  const code = codeInput.value.trim();
+  if (!code) return;
+  const result = await submitCode(code);
+  if (!result.ok) {
+    showLoginError(result.error);
+    return;
+  }
+  codeInput.value = "";
+  showView("chat");
 });
 
 logoutBtn.addEventListener("click", async () => {
-  const body = await fetch("/api/logout", { method: "POST" })
-    .then((resp) => resp.json().catch(() => ({})))
-    .catch(() => ({}));
+  await fetch("/api/logout", { method: "POST" }).catch(() => {});
   history = [];
   saveHistory(history);
-  showView(body?.bypassAuth ? "chat" : "login");
+  showView("login");
 });
 
 resetBtn.addEventListener("click", () => {
@@ -711,7 +846,10 @@ const sendMessage = async (text) => {
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(clientId ? { "X-Client-Id": clientId } : {}),
+      },
       body: JSON.stringify({ messages: history }),
     });
 
@@ -753,7 +891,7 @@ const sendMessage = async (text) => {
         if (event.type === "token") {
           replaceTypingWithBubble();
           assistantText += event.text;
-          setBubbleContent(assistantBubble, "assistant", assistantText);
+          setBubbleContent(assistantBubble, "assistant", assistantText, { streaming: true });
           scrollToBottom();
         } else if (event.type === "sources") {
           sources = event.sources;

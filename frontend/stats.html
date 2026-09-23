@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Statistik — Mentor*innen KI Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <!-- Login -->
+      <section id="login" class="view" hidden>
+        <div class="login-card">
+          <h1>Statistik</h1>
+          <p class="subtitle">Nutzungszahlen des Mentor*innen KI Chats</p>
+          <form id="login-form">
+            <label for="code-input">Zugangscode</label>
+            <input
+              id="code-input"
+              name="code"
+              type="text"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              required
+            />
+            <button type="submit">Anzeigen</button>
+            <p id="login-error" class="error" hidden></p>
+          </form>
+          <p class="privacy">
+            Hier werden ausschließlich Tageszahlen gezeigt. Es wird nicht gespeichert,
+            wer etwas gefragt hat, wann genau, oder worum es ging.
+          </p>
+        </div>
+      </section>
+
+      <!-- Statistik -->
+      <section id="stats" class="view stats-view" hidden>
+        <header class="chat-header">
+          <div><strong>Statistik</strong></div>
+          <div class="header-actions">
+            <button id="reload-btn" class="link-btn">Aktualisieren</button>
+            <button id="logout-btn" class="link-btn">Abmelden</button>
+          </div>
+        </header>
+        <div id="stats-body" class="stats-body"></div>
+      </section>
+    </main>
+    <script src="/stats.js" type="module"></script>
+  </body>
+</html>

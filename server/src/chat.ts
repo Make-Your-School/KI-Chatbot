@@ -20,7 +20,7 @@ import {
   markHealthy,
   markUnhealthy,
 } from "./providerHealth.ts";
-import { retrieve, formatContext } from "./rag.ts";
+import { retrieve, formatContext, loadFileText } from "./rag.ts";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompts.ts";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -64,6 +64,8 @@ type ExampleCode = {
   path: string;
   sourceUrl?: string;
   code: string;
+  /** True when the file was cut down to fit the card. */
+  truncated?: boolean;
 };
 
 export type ChatStreamEvent =
@@ -350,7 +352,44 @@ const extractResources = (
   return selected;
 };
 
-const CODE_PATH_RE = /\.(ino|c|cc|cpp|h|hpp|py|js|ts|jsx|tsx|json)$/i;
+// Only Arduino/C-family files count as a code sample.
+//
+// This used to include .py/.js/.ts/.jsx/.tsx/.json, which meant the card could
+// serve this project's own TypeScript as an "Arduino example" — every public
+// repo of the org is indexed, including this one.
+//
+// Checked against all 79 mks-* material repos (23.09.2026): every single one
+// ships real .ino/.c/.cpp/.h files, and none depends on a fenced block in a
+// README for its example. Markdown fences in the material repos are almost all
+// `bash` or untagged, i.e. wiring and install notes rather than sketches. So
+// narrowing this costs no real examples and removes the whole class of
+// wrong-repo hits.
+const CODE_PATH_RE = /\.(ino|c|cc|cpp|h|hpp)$/i;
+
+// A retrieved chunk is a blind 800-char slice, so showing it raw produces a
+// "sample" that begins and ends mid-statement. We pull the whole file instead
+// and only cut it if it would swamp the chat bubble — and then at line
+// boundaries, with the card saying that it was shortened.
+const MAX_EXAMPLE_LINES = 240;
+const MAX_EXAMPLE_CHARS = 8000;
+
+const fitExample = (code: string): { code: string; truncated: boolean } => {
+  const normalized = code.replace(/\s+$/, "");
+  const lines = normalized.split("\n");
+
+  if (lines.length <= MAX_EXAMPLE_LINES && normalized.length <= MAX_EXAMPLE_CHARS) {
+    return { code: normalized, truncated: false };
+  }
+
+  const kept: string[] = [];
+  let chars = 0;
+  for (const line of lines.slice(0, MAX_EXAMPLE_LINES)) {
+    if (chars + line.length + 1 > MAX_EXAMPLE_CHARS) break;
+    kept.push(line);
+    chars += line.length + 1;
+  }
+  return { code: kept.join("\n").replace(/\s+$/, ""), truncated: true };
+};
 
 const pickExampleCode = (
   chunks: Array<{ path: string; repo: string; sourceUrl?: string; text: string }>
@@ -364,11 +403,17 @@ const pickExampleCode = (
   const preferred = candidates.find(chunk => /(^|\/)examples?\//i.test(chunk.path)) ?? candidates[0];
   if (!preferred) return null;
 
+  // Fall back to the chunk if the file can't be reassembled (no index yet).
+  const whole = loadFileText(preferred.repo, preferred.path) ?? preferred.text;
+  const fitted = fitExample(whole);
+  if (!fitted.code.trim()) return null;
+
   return {
     repo: preferred.repo,
     path: preferred.path,
     sourceUrl: preferred.sourceUrl,
-    code: preferred.text,
+    code: fitted.code,
+    truncated: fitted.truncated,
   };
 };
 
@@ -555,6 +600,7 @@ export async function* streamChat(
         repo: example.repo,
         path: example.path,
         chars: example.code.length,
+        truncated: !!example.truncated,
       });
       yield { type: "example", example };
     } else {

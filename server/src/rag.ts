@@ -505,6 +505,55 @@ export const retrieve = async (
   }
 };
 
+// --- Whole-file lookup ------------------------------------------------------
+//
+// Chunks are blind fixed-size slices of a file (see scripts/embed.ts), so a
+// single chunk is almost never a usable code sample — it starts and ends
+// mid-statement. For the "Beispielcode" card we therefore reassemble the whole
+// file from its chunks in insert order.
+//
+// The overlap between consecutive chunks is detected rather than hardcoded, so
+// this keeps working if CHUNK_OVERLAP in the embed script ever changes.
+
+const MAX_OVERLAP_PROBE = 1000;
+
+const joinOverlappingChunks = (parts: string[]): string => {
+  let out = parts[0] ?? "";
+  for (let i = 1; i < parts.length; i += 1) {
+    const next = parts[i];
+    const max = Math.min(MAX_OVERLAP_PROBE, out.length, next.length);
+    let overlap = 0;
+    for (let len = max; len > 0; len -= 1) {
+      if (out.endsWith(next.slice(0, len))) {
+        overlap = len;
+        break;
+      }
+    }
+    out += next.slice(overlap);
+  }
+  return out;
+};
+
+/** Full text of one embedded file, or null if it isn't in the index. */
+export const loadFileText = (repo: string, path: string): string | null => {
+  try {
+    // openDb() is inside the try on purpose: it can throw (missing sqlite-vec,
+    // a DB replaced mid-read). A failed example card must never take down the
+    // whole chat response — the caller falls back to the raw chunk.
+    const handle = openDb();
+    if (!handle) return null;
+
+    const rows = handle
+      .prepare("SELECT text FROM chunks WHERE repo = ? AND path = ? ORDER BY rowid")
+      .all(repo, path) as Array<{ text: string }>;
+    if (rows.length === 0) return null;
+    return joinOverlappingChunks(rows.map(r => r.text));
+  } catch (err) {
+    debugLog("rag", "loadFileText failed", { repo, path, message: (err as Error).message });
+    return null;
+  }
+};
+
 export const formatContext = (chunks: Chunk[]): string => {
   if (chunks.length === 0) return "";
   return chunks

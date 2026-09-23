@@ -3,6 +3,7 @@
 //   POST /api/logout   — clear session cookie
 //   GET  /api/me       — check if current session is valid
 //   POST /api/chat     — stream a chat reply (SSE)
+//   GET  /api/stats    — aggregate usage counters (needs a scope=stats code)
 //   GET  /api/health   — liveness probe
 //   GET  /*            — static frontend files
 //
@@ -15,18 +16,14 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config } from "./config.ts";
-import { validateCode, issueSession, verifySession } from "./auth.ts";
+import { validateCode, issueSession, verifySession, lookupByHash } from "./auth.ts";
+import * as stats from "./stats.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
 import { getEmbedder } from "./embeddings.ts";
 import { getModels, modelsFilePath } from "./models.ts";
-import { tryConsume, tryConsumeLogin } from "./ratelimit.ts";
+import { tryConsumeDaily, tryConsumeLogin, type DailyScope } from "./ratelimit.ts";
 
 const app = new Hono();
-const debugBypassSession = {
-  hash: "__debug_bypass_auth__",
-  iat: 0,
-  exp: Number.MAX_SAFE_INTEGER,
-};
 
 // Extract the client IP from proxy headers. Behind Caddy, X-Forwarded-For is
 // the canonical source. In dev (no reverse proxy) this falls back to "local"
@@ -39,20 +36,35 @@ const clientIp = (c: { req: { header: (n: string) => string | undefined } }): st
   return "local";
 };
 
-const currentSession = (token: string | undefined) =>
-  config.auth.bypassForDebug
-    ? debugBypassSession
-    : verifySession(token);
+// Per-browser rate-limit key. The frontend generates a random id once and keeps
+// it in localStorage; it identifies a browser, not a person, and never leaves
+// the rate limiter. Anything malformed is ignored — the session id then carries
+// the browser bucket too, which is the conservative fallback.
+const BROWSER_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+const clientBrowserId = (
+  c: { req: { header: (n: string) => string | undefined } },
+  fallback: string
+): string => {
+  const raw = c.req.header("x-client-id")?.trim();
+  return raw && BROWSER_ID_RE.test(raw) ? raw : fallback;
+};
+
+const LIMIT_MESSAGE: Record<DailyScope, (limit: number) => string> = {
+  code: limit =>
+    `Das Tages-Limit dieses Schulcodes ist erreicht (${limit} Anfragen). ` +
+    `Bitte einer Mentor*in Bescheid geben oder morgen weitermachen.`,
+  session: limit =>
+    `Dein Tages-Limit ist erreicht (${limit} Anfragen). Morgen geht es weiter.`,
+  browser: limit =>
+    `Dein Tages-Limit ist erreicht (${limit} Anfragen). Morgen geht es weiter.`,
+};
 
 // --- API routes (registered BEFORE static so they're not shadowed) ---------
 
 app.get("/api/health", c => c.json({ ok: true }));
 
 app.post("/api/login", async c => {
-  if (config.auth.bypassForDebug) {
-    return c.json({ ok: true, school: "Debug-Modus", bypassAuth: true });
-  }
-
   const ipLimit = tryConsumeLogin(clientIp(c));
   if (!ipLimit.ok) {
     return c.json(
@@ -70,59 +82,115 @@ app.post("/api/login", async c => {
 
   const record = validateCode(code);
   if (!record) {
+    stats.record("login_fail");
     return c.json(
       { ok: false, error: "Ungültiger oder abgelaufener Schulcode." },
       401
     );
   }
+  stats.record("login_ok");
 
-  const token = issueSession(record.hash);
+  const token = issueSession(record);
   setCookie(c, config.auth.cookieName, token, {
     httpOnly: true,
     sameSite: "Lax",
     secure: config.isProd,
     path: "/",
-    maxAge: config.auth.sessionTtlSeconds,
+    // Match the session's own expiry, which is clamped to the code's.
+    maxAge: Math.max(
+      60,
+      Math.min(
+        config.auth.sessionTtlSeconds,
+        record.expires_at - Math.floor(Date.now() / 1000)
+      )
+    ),
   });
-  return c.json({ ok: true, school: record.school });
+  return c.json({ ok: true, school: record.school, scope: record.scope });
 });
 
 app.post("/api/logout", c => {
-  if (config.auth.bypassForDebug) {
-    return c.json({ ok: true, bypassAuth: true });
-  }
   deleteCookie(c, config.auth.cookieName, { path: "/" });
   return c.json({ ok: true });
 });
 
 app.get("/api/me", c => {
-  if (config.auth.bypassForDebug) {
-    return c.json({ ok: true, bypassAuth: true });
-  }
-  const session = currentSession(getCookie(c, config.auth.cookieName));
+  const session = verifySession(getCookie(c, config.auth.cookieName));
   if (!session) return c.json({ ok: false }, 401);
-  return c.json({ ok: true });
+
+  const record = lookupByHash(session.hash);
+  if (!record) {
+    deleteCookie(c, config.auth.cookieName, { path: "/" });
+    return c.json({ ok: false }, 401);
+  }
+  return c.json({ ok: true, school: record.school, scope: record.scope });
+});
+
+// Aggregate counters only — see src/stats.ts for what is and isn't collected.
+// Gated behind a code with scope 'stats', so it can be shared with mentors
+// without handing them the chat, and revoked like any other code.
+app.get("/api/stats", c => {
+  const session = verifySession(getCookie(c, config.auth.cookieName));
+  if (!session) return c.json({ error: "Nicht eingeloggt." }, 401);
+
+  const record = lookupByHash(session.hash);
+  if (!record) {
+    deleteCookie(c, config.auth.cookieName, { path: "/" });
+    return c.json({ error: "Code nicht mehr gültig." }, 401);
+  }
+  if (record.scope !== "stats") {
+    return c.json({ error: "Dieser Code hat keinen Zugriff auf die Statistik." }, 403);
+  }
+  return c.json(stats.summary());
 });
 
 app.post("/api/chat", async c => {
-  const session = currentSession(getCookie(c, config.auth.cookieName));
+  const session = verifySession(getCookie(c, config.auth.cookieName));
   if (!session) return c.json({ error: "Nicht eingeloggt." }, 401);
 
-  const limited = tryConsume(session.hash, config.rateLimit.perCodePerDay);
-  if (!limited.ok) {
+  // The cookie is signed, but that only proves it was issued by us — it says
+  // nothing about whether the code behind it still exists. Re-check on every
+  // request so `code revoke` and code expiry take effect right away.
+  const record = lookupByHash(session.hash);
+  if (!record) {
+    deleteCookie(c, config.auth.cookieName, { path: "/" });
     return c.json(
-      {
-        error: `Tages-Limit erreicht (${limited.limit} Anfragen pro Schulcode). Bitte morgen wieder versuchen.`,
-      },
-      429
+      { error: "Dieser Schulcode ist nicht mehr gültig. Bitte neu einloggen." },
+      401
     );
   }
+  if (record.scope !== "chat") {
+    return c.json({ error: "Dieser Code ist nur für die Statistik gedacht." }, 403);
+  }
 
+  // Parse and validate before charging quota — a malformed body should not
+  // cost anyone a request.
   const body = await c.req.json().catch(() => null);
   const history = Array.isArray(body?.messages) ? (body.messages as ChatMessage[]) : [];
   if (history.length === 0) {
     return c.json({ error: "Keine Nachrichten übergeben." }, 400);
   }
+
+  const limited = tryConsumeDaily([
+    {
+      scope: "code",
+      key: session.hash,
+      limit: record.daily_limit ?? config.rateLimit.perCodePerDay,
+    },
+    { scope: "session", key: session.sid, limit: config.rateLimit.perSessionPerDay },
+    {
+      scope: "browser",
+      key: clientBrowserId(c, session.sid),
+      limit: config.rateLimit.perBrowserPerDay,
+    },
+  ]);
+  if (!limited.ok) {
+    stats.record("rate_limited");
+    return c.json(
+      { error: LIMIT_MESSAGE[limited.denied.scope](limited.denied.limit) },
+      429
+    );
+  }
+  stats.record("chat");
 
   // SSE stream to the browser.
   const stream = new ReadableStream({
@@ -158,12 +226,25 @@ app.post("/api/chat", async c => {
         rawWrite(": keepalive\n\n");
       }, 5000);
       try {
+        let sawSources = false;
         for await (const ev of streamChat(history)) {
+          // Counters only: which provider/model answered and whether the
+          // knowledge base had anything to offer. No content, no user.
+          if (ev.type === "sources") sawSources = true;
+          if (ev.type === "model") {
+            stats.record("provider", ev.provider);
+            stats.record("model", ev.model);
+          }
+          if (ev.type === "error") stats.record("chat_error");
           if (!write(ev)) break;
-          if (ev.type === "done" || ev.type === "error") break;
+          if (ev.type === "done" || ev.type === "error") {
+            stats.record(sawSources ? "rag_hit" : "rag_miss");
+            break;
+          }
         }
       } catch (err) {
         console.error("[chat] stream error:", err);
+        stats.record("chat_error");
         if (!closed) write({ type: "error", message: "Interner Fehler beim Streaming." });
       } finally {
         clearInterval(keepalive);
@@ -202,6 +283,7 @@ app.use("/*", async (c, next) => {
   }
 });
 
+app.get("/stats", serveStatic({ path: `${config.frontend.distPath}/stats.html` }));
 app.use("/*", serveStatic({ root: config.frontend.distPath }));
 app.use("/", serveStatic({ path: `${config.frontend.distPath}/index.html` }));
 
@@ -220,10 +302,11 @@ for (const p of activeProviders) {
     `[ki-hackdays] ${p} models: ${getModels(p).join(", ")} (live from ${modelsFilePath(p)})`
   );
 }
-console.log(`[ki-hackdays] rate limit: ${config.rateLimit.perCodePerDay}/day per code`);
-if (config.auth.bypassForDebug) {
-  console.log("[ki-hackdays] WARNING: auth bypass enabled via DEBUG_BYPASS_AUTH");
-}
+console.log(
+  `[ki-hackdays] rate limit/day: code ${config.rateLimit.perCodePerDay} (per-code override possible), ` +
+    `session ${config.rateLimit.perSessionPerDay}, browser ${config.rateLimit.perBrowserPerDay}`
+);
+console.log(`[ki-hackdays] login limit: ${config.rateLimit.loginPerIpPerHour}/hour per IP`);
 if (config.debug.pipeline) {
   console.log(
     `[ki-hackdays] debug pipeline logging enabled${config.debug.includeContent ? " (with content previews)" : ""}`

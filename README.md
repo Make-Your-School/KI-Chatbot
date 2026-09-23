@@ -422,6 +422,39 @@ Ein Schulcode, der 365 Tage gueltig ist:
 sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts new "Meine Schule" --days=365'
 ```
 
+Leicht merkbare Codes anlegen (fester Code statt Zufallscode, eigenes Tages-Limit):
+
+```bash
+sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts new "Make Your School" --code=BEISPIELCODE --label="Event-Zugang" --days=365 --limit=400'
+sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts new "Zweite Schule" --code=ZWEITERCODE --days=365 --limit=200'
+```
+
+Eingeloggt wird ausschliesslich ueber das Eingabefeld auf der Startseite.
+
+**Ein Code deckt alle Schreibweisen ab — du legst ihn nur einmal an.** Ignoriert werden:
+
+- Gross-/Kleinschreibung
+- Leerzeichen, auch aussen und mehrfach
+- Bindestrich, Unterstrich, Punkt
+- typografische Striche (`–`, `—`, `−`), die Autokorrektur gern aus `-` macht
+
+`MEINCODE`, `meincode`, `mein code`, `mein-code`, `mein_code` und `MEIN—CODE`
+sind also **derselbe** Code.
+
+> ⚠️ **Nicht** ignoriert wird die Verwechslung von `O`/`0` und `I`/`1`. Denk dir
+> deshalb am besten Codes ohne diese Zeichen aus — die Zufallscodes machen das
+> automatisch, bei `--code=` prueft es niemand.
+
+Dazu ein paar Zufallscodes auf Vorrat, damit immer einer greifbar ist:
+
+```bash
+for i in 1 2 3; do
+  sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts new "Reserve" --label="Vorrat" --days=365'
+done
+```
+
+Zufallscodes werden **nur einmal angezeigt** — direkt wegschreiben.
+
 Vorhandene Codes anzeigen:
 
 ```bash
@@ -577,9 +610,12 @@ Schulcode erstellt:
   Code:    MK4XQP
   Schule:  Testschule
   Gültig:  7 Tage
+  Limit:   Standard aus .env
 ```
 
 Der Code wird **nicht nochmal angezeigt**. Schreib ihn dir kurz auf.
+
+(Bei einem festen Code via `--code=` entfaellt der Hinweis „wird nicht nochmal angezeigt" — den Code kennst du ja selbst.)
 
 ---
 
@@ -631,13 +667,69 @@ Bei reinen Frontend-Änderungen reicht `git pull` — Caddy liefert die neuen st
 ### Schulcodes verwalten
 
 ```bash
-sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts new "Schulname" --label="April-Hackdays" --days=7'
-sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts list'
-sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts revoke <hash-prefix>'
-sudo -iu kihd bash -c 'cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts prune'    # alle abgelaufenen löschen
+K='cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts'
+
+sudo -iu kihd bash -c "$K new \"Schulname\" --label=\"April-Hackdays\" --days=7"
+sudo -iu kihd bash -c "$K new \"Make Your School\" --code=BEISPIELCODE --days=365 --limit=400"
+sudo -iu kihd bash -c "$K list"
+sudo -iu kihd bash -c "$K revoke BEISPIELCODE"        # eigener Code: einfach den Code
+sudo -iu kihd bash -c "$K revoke a1b2c3d4"       # Zufallscode: Hash-Praefix aus der Liste
+sudo -iu kihd bash -c "$K logout-all"            # alle ueberall ausloggen, Codes bleiben
+sudo -iu kihd bash -c "$K prune"                 # alle abgelaufenen loeschen
 ```
 
-Die Liste zeigt nur den **Hash-Präfix** (erste 8 Hex-Zeichen) — den Plaintext-Code kannst du nicht mehr rausfinden, nur revoken.
+**Wo die Codes leben:** in `server/data/codes.db` auf dem Server — nirgends sonst. Nicht im Git, nicht in der `.env`. Gespeichert wird nur der SHA-256-Hash, nie der Code selbst.
+
+> ⚠️ **Nie einen echten Code committen** — weder in Code, Kommentaren, README noch in Anleitungen. Dieses Repo ist oeffentlich. Alle Codes in der Doku (`BEISPIELCODE`, `ZWEITERCODE`) sind bewusst erfundene Platzhalter. Ist doch mal einer durchgerutscht: `revoke <CODE>` und einen neuen anlegen.
+
+**Die drei Werkzeuge zum Rauswerfen:**
+
+| Befehl | Wirkung | Wann |
+|---|---|---|
+| `revoke <CODE>` | Code weg, alle damit sofort ausgesperrt | Ein Code ist durchgesickert |
+| `logout-all` | alle ausgeloggt, **Codes bleiben gueltig** | Verdacht, aber kein bestimmter Code |
+| `prune` | abgelaufene Codes aufraeumen | Hausputz |
+
+Alle drei wirken **sofort** und brauchen keinen Neustart.
+
+Die Liste zeigt nur den **Hash-Präfix** (erste 8 Hex-Zeichen) — den Plaintext-Code kannst du nicht mehr rausfinden, nur revoken. Ausnahme: einen mit `--code=` selbst gesetzten Code kennst du ja.
+
+Zwei Flags fuer `new`:
+
+| Flag | Wirkung |
+|---|---|
+| `--code=BEISPIELCODE` | Fester Code statt Zufallscode, 4–32 Zeichen aus A–Z und 0–9. Fuer Codes, die man sich merken oder von einer Folie ablesen koennen soll. |
+| `--limit=400` | Tages-Limit nur fuer diesen Code. Ohne Angabe gilt `RATE_LIMIT_PER_CODE_PER_DAY` aus der `.env`. |
+
+### Statistik ansehen
+
+`https://ki-hackdays.de/stats` — geschuetzt mit einem eigenen Zugangscode.
+
+```bash
+K='cd /opt/ki-hackdays/server && /home/kihd/.bun/bin/bun scripts/code.ts'
+sudo -iu kihd bash -c "$K new \"Mentor*innen\" --code=EINCODE --days=365 --scope=stats"
+```
+
+Ein Code hat **entweder** `chat` **oder** `stats` — nie beides:
+
+| `--scope` | darf chatten | sieht /stats |
+|---|---|---|
+| `chat` (Standard) | ✅ | ❌ |
+| `stats` | ❌ | ✅ |
+
+Damit kannst du den Statistik-Code an andere Mentor*innen weitergeben, ohne ihnen den Chat zu oeffnen. `revoke` und `logout-all` wirken genauso wie bei Schulcodes.
+
+**Was gezeigt wird:** Chat-Anfragen, Logins (erfolgreich/gescheitert), Limit-Treffer, Fehler — jeweils heute / 7 Tage / Monat / Jahr. Dazu ein Tagesverlauf ueber 30 Tage, welche Anbieter und Modelle geantwortet haben, und die aktuelle Server-Auslastung.
+
+**Was gespeichert wird:** ausschliesslich Tageszaehler in `server/data/stats.db`.
+
+- Eine Zahl pro Tag und Kennzahl — **keine Zeile pro Anfrage**
+- Keine IP-Adressen, keine Uhrzeiten, keine Gespraechsinhalte, kein Bezug zu einem Schulcode
+- Feinste Aufloesung ist ein Tag (UTC), damit sich daraus kein Verlauf rekonstruieren laesst
+- Zahlen aelter als `STATS_RETENTION_DAYS` (Standard 800) werden beim Start geloescht
+- Eigene Datei, getrennt von `codes.db` — Statistik loeschen kann die Codes nicht gefaehrden
+
+Die Server-Werte (CPU, RAM, Platte) sind Momentaufnahmen und werden gar nicht gespeichert.
 
 ### RAG manuell neu embedden
 
@@ -649,8 +741,11 @@ journalctl -u ki-hackdays-embed.service -f
 Das kannst du jederzeit auslösen, auch wenn schon ein `knowledge.db` existiert. Typische Fälle:
 
 - Ein neues Repo ist in der Organisation aufgetaucht.
-- Du hast Änderungen an `server/scripts/embed.ts`, `server/src/rag.ts` oder an den Prompt-/Linking-Regeln deployt.
+- Du hast `server/scripts/embed.ts` geändert — **immer**, denn davon haengt ab, wie die Datenbank gebaut wird (Chunk-Groesse, welche Dateien rein, Metadaten, Bildauswahl).
+- Du hast in `server/src/rag.ts` die **Suche oder das Schema** geaendert. Rein lesende Ergaenzungen brauchen kein neues Embedding — die Datenbank aendert sich dadurch ja nicht.
 - Du willst nach einem `git pull` nicht auf den nächtlichen Timer warten.
+
+Nicht noetig bei Aenderungen am Prompt (`server/src/prompts.ts`), an der Modell-Liste oder am Frontend. Im Zweifel schadet ein Lauf nichts — er kostet nur Zeit und klont 83 Repos neu.
 
 Die Unit baut die Embedding-Datenbank neu und startet danach den Chat-Service automatisch neu.
 
@@ -690,7 +785,6 @@ journalctl -u caddy -n 50                          # TLS / Request-Probleme
 Fuer gezieltes Debugging von RAG, Quellen, Bildauswahl und Provider-Fallbacks kannst du in der `.env` temporaer aktivieren:
 
 ```env
-DEBUG_BYPASS_AUTH=1
 DEBUG_CHAT_PIPELINE=1
 DEBUG_CHAT_INCLUDE_CONTENT=1
 DEBUG_CHAT_PREVIEW_CHARS=240
@@ -703,19 +797,32 @@ systemctl restart ki-hackdays.service
 journalctl -u ki-hackdays.service -f
 ```
 
-Mit `DEBUG_BYPASS_AUTH=1` startet die App direkt ohne Schulcode-Login. Das ist nur fuer kurzes Debugging gedacht und sollte auf einem oeffentlich erreichbaren Server nicht aktiv bleiben.
+Einen Auth-Bypass gibt es bewusst nicht mehr. Zum Testen legst du dir einen eigenen Code an (`--code=TESTTEST --days=1`) und raeumst ihn danach mit `revoke TESTTEST` wieder weg.
 
 Wichtig: `DEBUG_CHAT_INCLUDE_CONTENT=1` schreibt gekuerzte Vorschauen von Nutzer*innen-Fragen, RAG-Kontext und Assistant-Antworten ins Journal. Danach wieder ausschalten.
 
-### Rate-Limit hochsetzen
+### Rate-Limits anpassen
+
+Es gibt drei unabhaengige Tages-Budgets. **Alle drei muessen Platz haben, bevor eines belastet wird** — eine abgelehnte Anfrage kostet also nirgends Kontingent.
+
+| Budget | Schluessel | Default | Wofuer |
+|---|---|---|---|
+| Code | Schulcode-Hash | 200 | Schuetzt das API-Budget eines (ggf. von vielen geteilten) Codes. Pro Code ueberschreibbar mit `--limit=`. |
+| Session | zufaellige ID pro Login | 40 | Hoeflichkeitsgrenze. Wer sich neu einloggt, bekommt ein frisches Budget — das ist Absicht und keine Sicherheitsgrenze. |
+| Browser | zufaellige ID im `localStorage` | 50 | Die Grenze, die bei einem geteilten Event-Code wirklich greift: sie haelt eine einzelne Person davon ab, das Kontingent aller aufzubrauchen. |
 
 In `.env`:
 
 ```
-RATE_LIMIT_PER_CODE_PER_DAY=100
+RATE_LIMIT_PER_CODE_PER_DAY=200
+RATE_LIMIT_PER_SESSION_PER_DAY=40
+RATE_LIMIT_PER_BROWSER_PER_DAY=50
+RATE_LIMIT_LOGIN_PER_IP_PER_HOUR=200
 ```
 
-Restart. In-memory-Counter werden dabei zurückgesetzt — das ist bei diesem Ansatz normal.
+`0` schaltet ein Budget ab. Restart noetig. In-memory-Counter werden dabei zurückgesetzt — das ist bei diesem Ansatz normal.
+
+**Warum das Login-Limit pro IP so hoch ist:** eine ganze Schule haengt hinter einer NAT-Adresse. Bei den frueheren 20/Stunde kamen die ersten 20 Leute rein und der Rest sah „Bitte eine Stunde warten". Brute Force ist hier nicht das Risiko — 6 Zeichen aus einem 32er-Alphabet sind rund 10^9 Kombinationen.
 
 ---
 
@@ -724,13 +831,19 @@ Restart. In-memory-Counter werden dabei zurückgesetzt — das ist bei diesem An
 - **Bun-Prozess lauscht nur auf 127.0.0.1**. Nichts kommt am Reverse-Proxy vorbei.
 - **Caddy macht TLS** und setzt HSTS + Basis-Security-Headers.
 - **Zwei Firewall-Ebenen**: Hetzner-Cloud-Firewall (Infra) + UFW (OS).
-- **Schulcode-Brute-Force**: 32^6 ≈ 10^9 Möglichkeiten + IP-Rate-Limit (20 Login-Versuche/Stunde) + 7-Tage-Ablauf.
-- **Chat-Rate-Limit**: 50/Tag pro Schulcode gegen Abuse und um OpenRouter-Free-Quota nicht zu sprengen.
-- **Cookies**: httpOnly, `SameSite=Lax`, `Secure` in Prod. HMAC-signiert, stateless.
+- **Schulcode-Brute-Force**: 32^6 ≈ 10^9 Möglichkeiten + IP-Rate-Limit (200 Login-Versuche/Stunde) + Ablaufdatum pro Code.
+- **Chat-Rate-Limit**: drei Budgets (Code / Session / Browser), siehe [Rate-Limits anpassen](#rate-limits-anpassen).
+- **Cookies**: httpOnly, `SameSite=Lax`, `Secure` in Prod, HMAC-signiert. Die Laufzeit ist auf das Ablaufdatum des Schulcodes gedeckelt — eine Session kann ihren Code nicht ueberleben.
+- **Revoke wirkt sofort**: jeder Chat-Request prueft in der Codes-DB nach, ob der Code noch gueltig ist. Das signierte Cookie allein reicht nicht.
+- **Prod-Bremse**: bei `NODE_ENV=production` verweigert der Server den Start, wenn `AUTH_SECRET` der Platzhalter oder kuerzer als 32 Zeichen ist.
+- **Kein Auth-Bypass**: es gibt keinen Schalter, der den Login umgeht. Zum Testen legt man einen echten Code an — ein CLI-Aufruf.
+- **`logout-all`**: setzt eine Sitzungs-Epoche in `codes.db` hoch. Alle ausgestellten Cookies sind damit auf einen Schlag ungueltig, ohne `AUTH_SECRET` anzufassen.
+- **CSP**: `default-src 'self'`, Bilder duerfen von beliebigen `https:`-Quellen kommen (Raw-URLs aus den Material-Repos). Kein Inline-Script, kein Inline-Style im Frontend.
 - **Keine Plaintext-Secrets im Git**: `.env` ist in `.gitignore`, `.env.example` ist der Template.
 - **Systemd-Hardening**: `ProtectSystem=strict`, `NoNewPrivileges`, private `/tmp`, read-only `/home`, …
 
 **Bekannte Grenzen:**
+- Ein leicht zu erratender Code wie `BEISPIELCODE` ist praktisch oeffentlich. Das Session- und Browser-Budget begrenzen den Schaden, verhindern ihn aber nicht — wer es darauf anlegt, loescht seinen `localStorage` und loggt sich neu ein. Das Code-Budget ist die harte Obergrenze; setz es so, dass du den worst case bezahlen kannst. Wenn ein Code missbraucht wird: `revoke` — das wirkt sofort, auch auf laufende Sessions.
 - LLM-Output ist nicht gefiltert. Prompt-Injection durch Schüler*innen kann den Ton des Mentor*innen KI Chats kippen. Im worst case: ein unpassender Witz. Kein Daten-Exfil-Risiko, weil der Chat keine Tools/Agenten hat.
 - Free-Models bei OpenRouter können jederzeit verschwinden oder harte Rate-Limits bekommen. Plan B: $5–20 Credits aufladen, Modell wechseln.
 
