@@ -45,6 +45,8 @@ type ImageHint = {
   url: string;
   repo: string;
   path: string;
+  /** Name des Bauteils — damit die Oberflaeche das Bild im Text platzieren kann. */
+  label?: string;
 };
 
 type ExampleHint = {
@@ -95,7 +97,7 @@ export type ChatStreamEvent =
       }>;
     }
   | { type: "resources"; resources: ResourceLink[] }
-  | { type: "images"; images: Array<{ url: string; repo: string; path: string }> }
+  | { type: "images"; images: ImageHint[] }
   | { type: "example"; example: ExampleCode }
   | { type: "model"; provider: Provider; model: string }
   | { type: "done" }
@@ -291,8 +293,8 @@ const coverImage = (repo: string): string | null => {
 
 const pickImages = (
   chunks: Array<{ imageUrl?: string; repo: string; path: string }>
-): Array<{ url: string; repo: string; path: string }> => {
-  const out: Array<{ url: string; repo: string; path: string }> = [];
+): ImageHint[] => {
+  const out: ImageHint[] = [];
   const seenRepos = new Set<string>();
 
   for (const chunk of chunks) {
@@ -303,7 +305,15 @@ const pickImages = (
     const url = coverImage(chunk.repo) ?? chunk.imageUrl;
     if (typeof url !== "string" || url.length === 0) continue;
     seenRepos.add(chunk.repo);
-    out.push({ url, repo: chunk.repo, path: chunk.path });
+    const facts = repoFacts(chunk.repo);
+    out.push({
+      url,
+      repo: chunk.repo,
+      path: chunk.path,
+      // Genau der Name, den das Modell im Text benutzt — er stammt aus
+      // derselben Quelle wie die Beschriftung der Link-Karte.
+      label: facts?.shortDescr ?? facts?.title,
+    });
     if (out.length >= MAX_IMAGES) break;
   }
   return out;
@@ -576,7 +586,15 @@ const extractResources = (
   };
   const selected: ResourceLink[] = [];
 
+  // Die blosse Startseite des Herstellers kommt nur mit, wenn es sonst keine
+  // Anleitung gibt. Steht das Wiki schon da, sagt "www.seeedstudio.com/" nichts
+  // mehr dazu — und das ist bei 54 von 80 Repos woertlich derselbe Link.
+  // Bei kleinen Herstellern wie sensebox.de oder makeymakey.com IST die
+  // Startseite die Doku, dort bleibt sie drin.
+  const hasDoc = sorted.some(resource => resource.kind === "doc");
+
   for (const resource of sorted) {
+    if (resource.kind === "vendor" && hasDoc) continue;
     if (used[resource.kind] >= perKindLimit[resource.kind]) continue;
     selected.push({
       label: resource.label,

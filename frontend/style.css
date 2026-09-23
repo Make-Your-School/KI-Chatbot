@@ -344,6 +344,27 @@ button, .link-btn {
 .answer-images.is-pair .answer-image img {
   max-height: 10rem;
 }
+
+/* Im Fließtext: die Fotos begleiten den Absatz, statt ihn zu unterbrechen.
+   Deutlich größer als das Bildchen auf der Link-Karte, aber klein genug, dass
+   der Text drumherum zusammenhängend lesbar bleibt. */
+.answer-images.is-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: .6rem 0;
+}
+.answer-images.is-inline .answer-image {
+  width: 8rem;
+  max-width: 100%;
+}
+.answer-images.is-inline .answer-image img,
+.answer-images.is-inline.is-pair .answer-image img {
+  max-height: 5.5rem;
+}
+.answer-images.is-inline .answer-image-caption {
+  font-size: .72rem;
+}
 .answer-image-caption {
   margin-top: .3rem;
   font-size: .76rem;

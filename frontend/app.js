@@ -938,6 +938,49 @@ const partNameFromRepo = (repo) =>
     .replace(/[-_]+/g, " ")
     .trim();
 
+// Wo im Text gehört das Bild hin?
+//
+// Der Server schickt zu jedem Bild den Namen des Bauteils mit — denselben, den
+// das Modell im Text benutzt, beide stammen aus material_short_descr. Gesucht
+// wird also der erste Absatz, in dem einer dieser Namen vorkommt; direkt
+// darunter landen die Fotos.
+//
+// Findet sich keiner, bleibt es beim alten Verhalten: ans Ende der Antwort.
+// Lieber unten als an einer willkürlichen Stelle.
+const looseText = (value) => String(value || "").toLowerCase().replace(/[\s\-_]/g, "");
+
+const findMentionParagraph = (content, images) => {
+  const names = images.map((image) => looseText(image?.label)).filter((name) => name.length >= 4);
+  if (names.length === 0) return null;
+
+  for (const node of content.querySelectorAll("p, li")) {
+    const haystack = looseText(node.textContent);
+    if (names.some((name) => haystack.includes(name))) return node;
+  }
+  return null;
+};
+
+/**
+ * Hängt die Fotos an die Stelle, an der im Text über die Bauteile geredet wird.
+ * Klappt das nicht, werden sie unten an die Blase gehängt.
+ */
+const placeImages = (bubble, images) => {
+  const list = Array.isArray(images) ? images : [];
+  const block = makeImagesBlock(list);
+  if (!block) return;
+
+  const content = bubble.querySelector(".bubble-content");
+  const anchor = content ? findMentionParagraph(content, list) : null;
+  if (!anchor) {
+    bubble.appendChild(block);
+    return;
+  }
+  // Im Fließtext kleiner: die Fotos sollen den Absatz begleiten, nicht ihn
+  // unterbrechen.
+  block.classList.add("is-inline");
+  anchor.after(block);
+};
+
 const makeImagesBlock = (images) => {
   const list = Array.isArray(images) ? images : [];
   if (list.length === 0) return null;
@@ -1083,8 +1126,7 @@ const renderAll = () => {
       : { content: msg.content, resources: msg.resources };
     const bubble = makeBubble(msg.role, presentation.content);
     if (msg.role === "assistant") {
-      const images = makeImagesBlock(imageList(msg));
-      if (images) bubble.appendChild(images);
+      placeImages(bubble, imageList(msg));
       const example = makeExampleBlock(msg.example);
       if (example) bubble.appendChild(example);
       const resources = makeResourcesBlock(presentation.resources);
@@ -1285,8 +1327,7 @@ const sendMessage = async (text) => {
       });
       saveHistory(history);
       if (assistantBubble) {
-        const imageBlock = makeImagesBlock(images);
-        if (imageBlock) assistantBubble.appendChild(imageBlock);
+        placeImages(assistantBubble, images);
         const exampleBlock = makeExampleBlock(example);
         if (exampleBlock) assistantBubble.appendChild(exampleBlock);
         setBubbleContent(assistantBubble, "assistant", presentation.content);
