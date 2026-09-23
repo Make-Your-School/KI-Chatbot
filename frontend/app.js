@@ -537,6 +537,134 @@ const makeMetaBlock = (meta) => {
   return div;
 };
 
+// Bildquelle fuer eine Karte. Neben echten URLs sind eigene Pfade erlaubt —
+// Video-Vorschaubilder liegen unter /api/video-thumb/<id>, damit der Browser
+// nichts bei YouTube anfragt. "//host/..." ist bewusst ausgeschlossen: das waere
+// wieder ein fremder Server.
+const safeImageSrc = (src) => {
+  if (typeof src !== "string" || !src) return null;
+  if (src.startsWith("/") && !src.startsWith("//")) return src;
+  return safeUrl(src);
+};
+
+// Das Bild einer Karte. Faellt es aus (tote URL, kein Vorschaubild), verschwindet
+// nur das Bild und die Karte wird wieder zur normalen Textkarte — kein Loch.
+const attachThumb = (node, src) => {
+  const href = safeImageSrc(src);
+  if (!href) return;
+  node.classList.add("has-thumb");
+  const img = document.createElement("img");
+  img.className = "resource-thumb";
+  img.alt = "";
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.addEventListener("error", () => {
+    img.remove();
+    node.classList.remove("has-thumb");
+  });
+  img.src = href;
+  node.prepend(img);
+};
+
+// Ein Stapel Vorschaubilder, leicht gefächert — so sieht man auf einen Blick,
+// dass hinter der Karte mehrere Videos stecken, ohne sie alle auszubreiten.
+// Höchstens drei: ab da wird es Matsch statt Stapel.
+const STACK_MAX = 3;
+
+const attachThumbStack = (node, sources) => {
+  const hrefs = sources.map(safeImageSrc).filter(Boolean).slice(0, STACK_MAX);
+  if (hrefs.length === 0) return;
+  if (hrefs.length === 1) {
+    attachThumb(node, hrefs[0]);
+    return;
+  }
+
+  node.classList.add("has-thumb", "has-stack");
+  const stack = document.createElement("span");
+  stack.className = "resource-stack";
+
+  // Von hinten nach vorn einfügen: das vorderste Bild steht zuletzt im DOM und
+  // liegt damit ohne z-index-Gefummel oben.
+  for (const [index, href] of [...hrefs].reverse().entries()) {
+    const img = document.createElement("img");
+    img.className = "resource-stack-img";
+    // 0 ist das vorderste Bild, 1 und 2 liegen dahinter. Das CSS dreht danach —
+    // die vorderste Karte bleibt gerade, die anderen schauen schräg hervor.
+    img.dataset.depth = String(hrefs.length - 1 - index);
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    // Fällt ein Bild aus, verschwindet nur dieses. Sind am Ende alle weg,
+    // wird aus der Karte wieder eine reine Textkarte.
+    img.addEventListener("error", () => {
+      img.remove();
+      if (!stack.querySelector("img")) {
+        stack.remove();
+        node.classList.remove("has-thumb", "has-stack");
+      }
+    });
+    img.src = href;
+    stack.appendChild(img);
+  }
+
+  node.prepend(stack);
+};
+
+const makeResourceLink = (resource, safeHref) => {
+  const link = document.createElement("a");
+  link.className = "resource-link";
+  link.href = safeHref;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.dataset.kind = resource.kind || "other";
+
+  const title = document.createElement("span");
+  title.className = "resource-link-label";
+  title.textContent = resource.label || safeHref;
+  link.appendChild(title);
+  appendHostChip(link, safeHref);
+
+  // Repo-Karten tragen das Foto des Bauteils, Video-Karten das Vorschaubild.
+  // Ohne das unterscheiden sich die beiden Arduino-Karten um drei Zeichen im
+  // Text, und fuenf Video-Karten sehen alle gleich aus.
+  attachThumb(link, resource?.image);
+  return link;
+};
+
+// A card that opens into the other cards.
+//
+// <summary> is the closed state and carries the first video's thumbnail, so the
+// group reads as "videos live here" at a glance. The open state replaces it with
+// the real cards — a stack of video cards, not a bullet list of links.
+const makeVideoGroup = (videos) => {
+  const box = document.createElement("details");
+  box.className = "resource-videogroup";
+
+  const summary = document.createElement("summary");
+  summary.className = "resource-link is-videogroup";
+
+  const title = document.createElement("span");
+  title.className = "resource-link-label";
+  title.textContent = `${videos.length} Videos`;
+  summary.appendChild(title);
+
+  const hint = document.createElement("span");
+  hint.className = "resource-link-host";
+  hint.textContent = "zum Ansehen aufklappen";
+  summary.appendChild(hint);
+
+  attachThumbStack(summary, videos.map((entry) => entry.resource?.image));
+  box.appendChild(summary);
+
+  const inner = document.createElement("div");
+  inner.className = "resource-list resource-videolist";
+  for (const entry of videos) {
+    inner.appendChild(makeResourceLink(entry.resource, entry.safeHref));
+  }
+  box.appendChild(inner);
+  return box;
+};
+
 const makeResourcesBlock = (resources) => {
   if (!resources || resources.length === 0) return null;
   const wrap = document.createElement("div");
@@ -550,26 +678,28 @@ const makeResourcesBlock = (resources) => {
   list.className = "resource-list";
 
   const seen = new Set();
+  const usable = [];
   for (const resource of resources) {
     const safeHref = safeUrl(resource?.url || "");
     const canonical = canonicalUrl(resource?.url || "");
     if (!safeHref || !canonical || seen.has(canonical) || shouldHideLink(safeHref)) continue;
     seen.add(canonical);
+    usable.push({ resource, safeHref });
+  }
 
-    const link = document.createElement("a");
-    link.className = "resource-link";
-    link.href = safeHref;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.dataset.kind = resource.kind || "other";
+  const videos = usable.filter(entry => entry.resource.kind === "video");
+  const rest = usable.filter(entry => entry.resource.kind !== "video");
 
-    const title = document.createElement("span");
-    title.className = "resource-link-label";
-    title.textContent = resource.label || safeHref;
+  for (const entry of rest) list.appendChild(makeResourceLink(entry.resource, entry.safeHref));
 
-    link.appendChild(title);
-    appendHostChip(link, safeHref);
-    list.appendChild(link);
+  // One video is just a card. Five are a wall — and five is exactly what the two
+  // Arduino boards bring along. So from two on they collapse into one card that
+  // looks like the others and opens the rest when clicked, rather than into a
+  // thin text toggle that reads like a footnote next to the picture cards.
+  if (videos.length === 1) {
+    list.appendChild(makeResourceLink(videos[0].resource, videos[0].safeHref));
+  } else if (videos.length > 1) {
+    list.appendChild(makeVideoGroup(videos));
   }
 
   if (!list.childNodes.length) return null;

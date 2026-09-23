@@ -624,3 +624,35 @@ export const formatContext = (chunks: Chunk[]): string => {
     })
     .join("\n\n---\n\n");
 };
+
+/**
+ * Das Titelbild eines Repos — unabhaengig davon, welcher Chunk gerade gefunden
+ * wurde.
+ *
+ * Vorher kam das Bild aus dem abgerufenen Chunk selbst. image_url ist aber nur
+ * bei Markdown-Chunks gesetzt: wurde von einem Repo gerade die .ino-Datei
+ * gefunden, gab es kein Bild — obwohl die readme.md des Repos eines hat. Das
+ * Titelbild gehoert zum Bauteil, nicht zum Textausschnitt.
+ *
+ * Kuerzester Pfad zuerst: das ist die readme.md im Wurzelverzeichnis und damit
+ * das Foto des Bauteils, nicht ein Aufbau-Screenshot aus einem Beispielordner.
+ */
+export const repoCoverImage = (repo: string): string | null => {
+  const handle = openDb();
+  if (!handle) return null;
+  try {
+    const row = handle
+      .query(
+        `SELECT image_url AS imageUrl
+         FROM chunks
+         WHERE repo = ? AND image_url IS NOT NULL AND image_url <> ''
+         ORDER BY length(path), path
+         LIMIT 1`
+      )
+      .get(repo) as { imageUrl?: string } | undefined;
+    return row?.imageUrl ?? null;
+  } catch {
+    // Aeltere Datenbanken haben die Spalte nicht — dann eben kein Bild.
+    return null;
+  }
+};

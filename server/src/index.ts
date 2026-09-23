@@ -4,6 +4,8 @@
 //   GET  /api/me       — check if current session is valid
 //   POST /api/chat     — stream a chat reply (SSE)
 //   GET  /api/stats    — aggregate usage counters (needs a scope=stats code)
+//   GET  /api/video-thumb/:id — YouTube thumbnail, proxied so no request from
+//                        a pupil's browser ever reaches Google
 //   GET  /api/health   — liveness probe
 //   GET  /*            — static frontend files
 //
@@ -18,6 +20,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config } from "./config.ts";
 import { validateCode, issueSession, verifySession, lookupByHash, listCodes } from "./auth.ts";
 import * as stats from "./stats.ts";
+import { getThumbnail, VIDEO_ID_RE } from "./videoThumbs.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
 import { getEmbedder } from "./embeddings.ts";
 import { getModels, modelsFilePath } from "./models.ts";
@@ -328,6 +331,29 @@ app.use("/*", async (c, next) => {
     c.header("Pragma", "no-cache");
     c.header("Expires", "0");
   }
+});
+
+// Vorschaubild eines YouTube-Videos, vom eigenen Server ausgeliefert.
+//
+// Hinter dem Login, damit daraus kein offener Bilder-Proxy fuer Fremde wird.
+// Die ID wird streng geprueft und landet nie als Pfadbestandteil irgendwo —
+// aus ihr wird ausschliesslich ein Dateiname im eigenen Cache-Ordner.
+app.get("/api/video-thumb/:id", async c => {
+  if (!verifySession(getCookie(c, config.auth.cookieName))) {
+    return c.json({ error: "Nicht eingeloggt." }, 401);
+  }
+  const id = c.req.param("id");
+  if (!VIDEO_ID_RE.test(id)) return c.json({ error: "Ungültige Video-ID." }, 400);
+
+  const image = await getThumbnail(id);
+  // 404 statt Platzhalter: die Karte im Browser faellt dann auf reinen Text
+  // zurueck, statt ein kaputtes Bild anzuzeigen.
+  if (!image) return c.json({ error: "Kein Vorschaubild." }, 404);
+
+  c.header("Content-Type", "image/jpeg");
+  // Die Bilder aendern sich nie. Einmal geladen, nie wieder angefragt.
+  c.header("Cache-Control", "private, max-age=604800, immutable");
+  return c.body(new Uint8Array(image));
 });
 
 app.get("/stats", serveStatic({ path: `${config.frontend.distPath}/stats.html` }));

@@ -108,6 +108,18 @@ export const config = {
     dbPath: process.env.CODES_DB_PATH ?? "./data/codes.db",
   },
 
+  // Zwischenspeicher fuer Video-Vorschaubilder.
+  //
+  // Die Bilder kommen von YouTube, werden aber vom eigenen Server ausgeliefert.
+  // Wuerde die Seite direkt auf i.ytimg.com verlinken, meldete jeder geoeffnete
+  // Chat die Schueler*in bei Google — ohne dass jemand ein Video angeklickt hat.
+  videoThumbs: {
+    dir: process.env.VIDEO_THUMB_DIR ?? "./data/thumbs",
+    // Ein Vorschaubild ist rund 15 KB. Selbst alle 22 Videos der Materialrepos
+    // zusammen bleiben damit weit unter einem Megabyte.
+    maxBytes: 512_000,
+  },
+
   // Aggregate-only usage counters. Deliberately a separate file from codes.db:
   // wiping statistics must never be able to touch the Schulcodes.
   stats: {

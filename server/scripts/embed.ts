@@ -262,6 +262,24 @@ const resolveImageUrl = (repo: Repo, relPath: string, rawUrl: string): string | 
   return rawFileUrl(repo, imagePath);
 };
 
+/**
+ * Das Ziel aus ![alt](ziel) herausloesen.
+ *
+ * Markdown erlaubt spitze Klammern, wenn der Pfad Leerzeichen enthaelt:
+ * ![](<./mys animation.avif>). Frueher wurde hier stumpf am ersten Leerzeichen
+ * abgeschnitten — dabei blieb "<./mys" uebrig und wurde als "%3C./mys" in die
+ * Datenbank geschrieben. Im Index standen mehrere solcher toter Bild-URLs.
+ *
+ * Ohne Klammern kann hinter dem Pfad ein Titel stehen: ![](bild.png "Titel").
+ * Da ist Abschneiden am Leerzeichen richtig.
+ */
+const markdownTarget = (raw: string): string => {
+  const value = raw.trim();
+  if (!value.startsWith("<")) return value.split(/\s+/)[0] ?? "";
+  const end = value.indexOf(">");
+  return (end > 0 ? value.slice(1, end) : value.slice(1)).trim();
+};
+
 const extractMarkdownImages = (repo: Repo, relPath: string, body: string): ImageEntry[] => {
   const images: ImageEntry[] = [];
   const seen = new Set<string>();
@@ -274,9 +292,7 @@ const extractMarkdownImages = (repo: Repo, relPath: string, body: string): Image
   };
 
   for (const match of body.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)) {
-    const alt = match[1] ?? "";
-    const target = (match[2] ?? "").trim().split(/\s+/)[0] ?? "";
-    addImage(alt, target);
+    addImage(match[1] ?? "", markdownTarget(match[2] ?? ""));
   }
 
   for (const match of body.matchAll(/<img\b[^>]*>/gi)) {

@@ -20,7 +20,7 @@ import {
   markHealthy,
   markUnhealthy,
 } from "./providerHealth.ts";
-import { retrieve, formatContext, loadFileText } from "./rag.ts";
+import { retrieve, formatContext, loadFileText, repoCoverImage } from "./rag.ts";
 import { SYSTEM_PROMPT, buildUserMessage } from "./prompts.ts";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -57,6 +57,10 @@ type ResourceLink = {
   label: string;
   url: string;
   kind: ResourceKind;
+  /** Bild des Bauteils — nur bei Repo-Links, damit die Karte zeigt, worum es geht. */
+  image?: string;
+  /** Repo-Name, damit der Aufrufer weiss, welches Bild schon vergeben ist. */
+  repo?: string;
 };
 
 type ExampleCode = {
@@ -93,6 +97,8 @@ const MAX_SOURCE_HINTS = 3;
 const MAX_IMAGES = 2;
 const MAX_FOCUSED_REPOS = 2;
 const MAX_RESOURCE_LINKS = 4;
+const MAX_VIDEO_LINKS = 6;
+export const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const MATERIAL_NUMBER_RE = /\bmaterial(?:karte)?(?:\s*(?:nr\.?|nummer))?\s*#?\s*(\d{1,4})\b/i;
 const CODE_INTENT_RE = /\b(code|quellcode|sketch|programm|ino|beispielcode)\b/i;
 const LINK_INTENT_RE = /\b(link|links|repo|github|readme|doku|dokumentation|video|anleitung)\b/i;
@@ -258,6 +264,18 @@ const sanitizeHistory = (history: ChatMessage[]): ChatMessage[] =>
  * indem man beide nebeneinander sieht. Mehr als zwei waere eine Galerie und
  * keine Hilfe mehr.
  */
+// repoCoverImage() geht an die Datenbank. Innerhalb einer Antwort wird nach
+// demselben Repo mehrfach gefragt (Bildblock und Link-Karte), deshalb hier ein
+// kleiner Merker. Die Titelbilder aendern sich nur beim naechtlichen Einbetten.
+const coverCache = new Map<string, string | null>();
+const coverImage = (repo: string): string | null => {
+  const hit = coverCache.get(repo);
+  if (hit !== undefined) return hit;
+  const value = repoCoverImage(repo);
+  coverCache.set(repo, value);
+  return value;
+};
+
 const pickImages = (
   chunks: Array<{ imageUrl?: string; repo: string; path: string }>
 ): Array<{ url: string; repo: string; path: string }> => {
@@ -265,16 +283,55 @@ const pickImages = (
   const seenRepos = new Set<string>();
 
   for (const chunk of chunks) {
-    if (typeof chunk.imageUrl !== "string" || chunk.imageUrl.length === 0) continue;
     if (seenRepos.has(chunk.repo)) continue;
+    // Titelbild des Repos zuerst. Der gefundene Chunk ist nur der Notnagel:
+    // war es eine .ino- oder .h-Datei, traegt er gar kein Bild, obwohl das
+    // Bauteil eines hat.
+    const url = coverImage(chunk.repo) ?? chunk.imageUrl;
+    if (typeof url !== "string" || url.length === 0) continue;
     seenRepos.add(chunk.repo);
-    out.push({ url: chunk.imageUrl, repo: chunk.repo, path: chunk.path });
+    out.push({ url, repo: chunk.repo, path: chunk.path });
     if (out.length >= MAX_IMAGES) break;
   }
   return out;
 };
 
 const normalizeResourceUrl = (url: string): string => url.replace(/\.git$/, "");
+
+/**
+ * Die Video-ID aus einer YouTube-Adresse, in allen drei gebraeuchlichen Formen.
+ * Gibt null zurueck, sobald irgendetwas nicht passt — daraus wird ein Pfad, und
+ * ein geratener Pfad waere eine tote Bildadresse.
+ */
+const youtubeVideoId = (url: string): string | null => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.replace(/^www\./, "");
+  let id: string | null = null;
+  if (host === "youtu.be") id = parsed.pathname.slice(1);
+  else if (host === "youtube.com" || host === "m.youtube.com") {
+    if (parsed.pathname === "/watch") id = parsed.searchParams.get("v");
+    else if (parsed.pathname.startsWith("/embed/")) id = parsed.pathname.slice(7);
+  }
+  return id && YOUTUBE_ID_RE.test(id) ? id : null;
+};
+
+/**
+ * Vorschaubilder kommen ueber den eigenen Server, nicht direkt von YouTube.
+ *
+ * Ein <img src="https://i.ytimg.com/..."> wuerde den Browser der Schueler*in
+ * bei Google melden, bevor ueberhaupt jemand auf ein Video geklickt hat — allein
+ * dafuer, dass die Antwort angezeigt wurde. Der Umweg ueber /api/video-thumb
+ * kostet etwas Speicher und haelt die Seite bei "keine Dritten".
+ */
+const videoThumbPath = (url: string): string | undefined => {
+  const id = youtubeVideoId(url);
+  return id ? `/api/video-thumb/${id}` : undefined;
+};
 
 const classifyResourceKind = (label: string, url: string): ResourceKind => {
   const haystack = `${label} ${url}`.toLowerCase();
@@ -315,19 +372,50 @@ const labelPriority = (label: string): number => {
 };
 
 const extractResources = (
-  chunks: Array<{ text: string; repoUrl?: string; sourceUrl?: string; path: string }>,
+  chunks: Array<{
+    text: string;
+    repo?: string;
+    repoUrl?: string;
+    sourceUrl?: string;
+    imageUrl?: string;
+    path: string;
+  }>,
   repoLinkLimit = 1
 ): ResourceLink[] => {
   const all: Array<ResourceLink & { order: number }> = [];
   const seen = new Set<string>();
   let order = 0;
 
+  // Welche URL gehoert zu welchem Repo, und welches Bauteilbild haengt daran.
+  //
+  // Noetig, weil die Repo-Links nicht aus chunk.repoUrl kommen, sondern als
+  // "- GitHub-Repo Arduino UNO R3: https://..." aus dem Links-Block im Text.
+  // Ueber die URL finden wir zurueck zum Repo — und damit zum Bild.
+  const repoByUrl = new Map<string, { repo: string; image?: string }>();
+  for (const chunk of chunks) {
+    if (!chunk.repoUrl || !chunk.repo) continue;
+    const key = normalizeResourceUrl(chunk.repoUrl);
+    if (repoByUrl.has(key)) continue;
+    repoByUrl.set(key, { repo: chunk.repo, image: coverImage(chunk.repo) ?? chunk.imageUrl });
+  }
+
   const addResource = (label: string, rawUrl: string): void => {
     const url = normalizeResourceUrl(rawUrl.trim());
     if (!/^https?:\/\//i.test(url)) return;
     if (seen.has(url)) return;
     seen.add(url);
-    all.push({ label, url, kind: classifyResourceKind(label, url), order });
+    const known = repoByUrl.get(url);
+    // Zeigt die URL auf ein Repo aus dem Kontext, ist es eines — egal wie das
+    // Label lautet. Das ist verlaesslicher als das Raten am Text.
+    const kind = known ? "repo" : classifyResourceKind(label, url);
+    all.push({
+      label,
+      url,
+      kind,
+      image: known ? known.image : kind === "video" ? videoThumbPath(url) : undefined,
+      repo: known?.repo,
+      order,
+    });
     order += 1;
   };
 
@@ -353,13 +441,17 @@ const extractResources = (
   });
 
   // Ein Repo-Link pro Repo, auf das sich die Antwort stuetzt — bei den zwei
-  // Arduino-Varianten sind das zwei, sonst einer. Alles andere bleibt bei
-  // einem: die Karte soll "hier klickst du weiter" sagen, nicht "hier sind
-  // alle Links, die ich finden konnte".
+  // Arduino-Varianten sind das zwei, sonst einer. Doku, Produktseite und der
+  // Rest bleiben bei einem: die Karte soll "hier klickst du weiter" sagen,
+  // nicht "hier sind alle Links, die ich finden konnte".
+  //
+  // Videos duerfen mehr sein, weil sie in der Oberflaeche zu EINEM Aufklapper
+  // zusammengefasst werden. Vorher stand hier 1, und bei "welches Board hast
+  // du?" wurden damit 4 von 5 vorhandenen Videos einfach weggeworfen.
   const perKindLimit: Record<ResourceKind, number> = {
     repo: Math.max(1, Math.min(repoLinkLimit, MAX_FOCUSED_REPOS)),
     doc: 1,
-    video: 1,
+    video: MAX_VIDEO_LINKS,
     product: 1,
     other: 1,
   };
@@ -374,9 +466,17 @@ const extractResources = (
 
   for (const resource of sorted) {
     if (used[resource.kind] >= perKindLimit[resource.kind]) continue;
-    selected.push({ label: resource.label, url: resource.url, kind: resource.kind });
+    selected.push({
+      label: resource.label,
+      url: resource.url,
+      kind: resource.kind,
+      image: resource.image,
+      repo: resource.repo,
+    });
     used[resource.kind] += 1;
-    if (selected.length >= MAX_RESOURCE_LINKS) break;
+    // Videos zaehlen nicht gegen das Platzbudget: sie belegen zusammen eine
+    // einzige Zeile, egal wie viele es sind.
+    if (selected.filter(r => r.kind !== "video").length >= MAX_RESOURCE_LINKS) break;
   }
 
   return selected;
@@ -638,7 +738,14 @@ export async function* streamChat(
       debugLog("chat", "no structured resources extracted");
     }
 
-    const images = showImage ? pickImages(focusedChunks) : [];
+    // Ein Repo, dessen Bild schon auf seiner Link-Karte steht, braucht oben
+    // kein zweites. Sonst steht dasselbe Foto zweimal in derselben Blase.
+    const reposWithImageCard = new Set(
+      resources.filter(r => r.image && r.repo).map(r => r.repo as string)
+    );
+    const images = showImage
+      ? pickImages(focusedChunks).filter(image => !reposWithImageCard.has(image.repo))
+      : [];
     if (images.length > 0) {
       debugLog("chat", "images emitted", images);
       yield { type: "images", images };
