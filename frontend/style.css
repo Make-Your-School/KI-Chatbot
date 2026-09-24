@@ -840,6 +840,23 @@ button, .link-btn {
   padding-top: 1rem;
   border-top: 1px solid var(--border);
 }
+/* Überschrift und Erklärzeile gehören enger zusammen als die Balken darunter —
+   deshalb ziehen beide den Gruppenabstand wieder heraus. */
+.quota-group-title {
+  margin: 0;
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.quota-group-note {
+  margin: -.45rem 0 0;
+  font-size: .74rem;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  max-width: 60ch;
+}
 .quota-head {
   display: flex;
   align-items: baseline;

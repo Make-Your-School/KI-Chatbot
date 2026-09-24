@@ -26,7 +26,7 @@ import { getThumbnail, VIDEO_ID_RE } from "./videoThumbs.ts";
 import { getAsset, PREVIEW_ID_RE, type AssetKind } from "./linkPreviews.ts";
 import { streamChat, type ChatMessage } from "./chat.ts";
 import { getEmbedder } from "./embeddings.ts";
-import { getModels, modelsFilePath } from "./models.ts";
+import { getModels, getModelLimits, modelsFilePath } from "./models.ts";
 import { tryConsumeDaily, tryConsumeLogin, usageToday, type DailyScope } from "./ratelimit.ts";
 
 const app = new Hono();
@@ -189,10 +189,25 @@ const quotaToday = () => {
     };
   };
 
+  // Was heute an welches Modell ging. Anders als alles andere in dieser
+  // Funktion kommt das aus den gespeicherten Tageszaehlern: das Tageslimit
+  // eines Anbieters laeuft dort weiter, auch wenn wir neu gestartet sind.
+  //
+  // Ein Limit steht nur dann daneben, wenn es in server/models/<anbieter>.txt
+  // eingetragen ist. Raten waere hier das Schlechteste von allem — eine
+  // erfundene Obergrenze sieht aus wie Wissen.
+  const modelLimits = getModelLimits();
+  const models = stats.modelUsageToday().map(row => ({
+    model: row.name,
+    used: row.count,
+    limit: modelLimits.get(row.name) ?? null,
+  }));
+
   return {
     codes,
     sessions: spread("session", config.rateLimit.perSessionPerDay),
     browsers: spread("browser", config.rateLimit.perBrowserPerDay),
+    models,
   };
 };
 

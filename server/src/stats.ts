@@ -117,6 +117,28 @@ const breakdown = (metric: Metric, from: string, to: string) =>
     )
     .all(metric, from, to) as Array<{ name: string; count: number }>;
 
+/**
+ * Was heute an welches Modell ging.
+ *
+ * Kommt aus den gespeicherten Tageszaehlern, nicht aus dem Ratelimiter: das
+ * Tageslimit eines Anbieters laeuft beim Anbieter weiter, egal ob wir zwischen-
+ * durch neu gestartet sind. Ein Zaehler, der bei jedem Deploy auf null springt,
+ * waere fuer diese Frage schlicht falsch.
+ *
+ * Kein LIMIT in der Abfrage — die Liste ist so lang wie die Modell-Liste, und
+ * ein abgeschnittenes Tagesbudget waere irrefuehrend.
+ */
+export const modelUsageToday = (): Array<{ name: string; count: number }> => {
+  const today = dayKey();
+  return db
+    .prepare(
+      "SELECT dim AS name, SUM(count) AS count FROM stats_daily " +
+        "WHERE metric = 'model' AND day = ? AND dim <> '' " +
+        "GROUP BY dim ORDER BY count DESC"
+    )
+    .all(today) as Array<{ name: string; count: number }>;
+};
+
 const shiftDays = (n: number): string =>
   new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
 

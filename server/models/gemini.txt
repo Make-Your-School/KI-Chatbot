@@ -12,6 +12,16 @@
 #     Server iteriert selbst durch die Liste und probiert das nächste, wenn
 #     eins 429 oder 5xx zurückgibt
 #   - `#` kommentiert den Rest der Zeile aus, Leerzeilen werden ignoriert
+#   - Optional hinter der Modell-ID, durch ein Leerzeichen getrennt, das
+#     Tageslimit des Anbieters fuer dieses Modell:
+#
+#         gemini-3.5-flash-lite 1000
+#
+#     Das ist NUR eine Anzeige fuer /stats ("Tagesbudget -> Pro KI-Modell").
+#     Der Server bremst nicht danach — das Limit gehoert dem Anbieter, und
+#     selbst zu bremsen wuerde ein Modell aussperren, das dort noch Luft hat.
+#     Ohne Eintrag steht in der Statistik nur die Zahl, kein Balken. Lieber
+#     kein Limit als ein geratenes: ein erfundener Balken sieht aus wie Wissen.
 #
 # Wo finde ich Modell-IDs?
 #   https://ai.google.dev/gemini-api/docs/models  → Spalte "Model code"

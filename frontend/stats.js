@@ -186,6 +186,38 @@ const makeMeter = (label, used, limit, hint) => {
   return line;
 };
 
+// Eine Zeile ohne Balken: Zahl statt Messlatte.
+//
+// Für Modelle ohne eingetragenes Limit. Ein Balken braucht eine Obergrenze,
+// sonst zeigt seine Länge nur den Rang innerhalb der Liste — und in einer Karte
+// namens "Tagesbudget" liest sich das wie "fast voll", obwohl niemand weiß,
+// wovon.
+const makeCountRow = (label, count, hint) => {
+  const line = el("div", "quota-line");
+  const head = el("div", "quota-head");
+  head.appendChild(el("span", "quota-label", label));
+  head.appendChild(el("span", "quota-value", nf.format(count)));
+  line.appendChild(head);
+  if (hint) line.appendChild(el("div", "quota-hint", hint));
+  return line;
+};
+
+/**
+ * Eine Gruppe mit Überschrift und Erklärzeile.
+ *
+ * Die Überschriften sind nicht Deko. Ohne sie stehen da nur Schulnamen, und in
+ * einem Monat weiß niemand mehr, dass hinter "Meine Schule" ein Zugangscode
+ * steckt und nicht etwa eine Schule, die sich irgendwo registriert hat.
+ */
+const makeQuotaGroup = (title, explain) => {
+  const group = el("div", "quota-group");
+  group.appendChild(el("h3", "quota-group-title", title));
+  if (explain) group.appendChild(el("p", "quota-group-note", explain));
+  return group;
+};
+
+const plural = (n, one, many) => `${nf.format(n)} ${n === 1 ? one : many}`;
+
 const makeQuota = (quota) => {
   const wrap = el("section", "stats-card");
   wrap.appendChild(el("h2", null, "Tagesbudget"));
@@ -195,7 +227,12 @@ const makeQuota = (quota) => {
     return wrap;
   }
 
-  const codes = el("div", "quota-group");
+  const codes = makeQuotaGroup(
+    "Pro Zugangscode",
+    "Ein Balken je gültigem Schulcode — also je Passwort, mit dem sich jemand " +
+      "einloggen kann. Der Name ist die Schule, für die der Code ausgestellt wurde; " +
+      "der Code selbst steht hier nirgends."
+  );
   if (!quota.codes || quota.codes.length === 0) {
     codes.appendChild(el("p", "stats-empty", "Keine gültigen Chat-Codes."));
   } else {
@@ -206,13 +243,18 @@ const makeQuota = (quota) => {
   }
   wrap.appendChild(codes);
 
-  const perPerson = el("div", "quota-group");
+  const perPerson = makeQuotaGroup(
+    "Pro Person",
+    "Damit eine einzelne Person nicht das Budget einer ganzen Schule aufbraucht. " +
+      "Einzelne Sitzungen werden nicht aufgelistet — nur wie viele aktiv waren und " +
+      "was die stärkste davon verbraucht hat."
+  );
   perPerson.appendChild(
     makeMeter(
       "Meiste Anfragen aus einer Sitzung",
       quota.sessions.busiest,
       quota.sessions.limit,
-      `${nf.format(quota.sessions.active)} Sitzungen heute aktiv, zusammen ${nf.format(quota.sessions.used)} Anfragen`
+      `${plural(quota.sessions.active, "Sitzung", "Sitzungen")} heute aktiv, zusammen ${plural(quota.sessions.used, "Anfrage", "Anfragen")}`
     )
   );
   perPerson.appendChild(
@@ -220,17 +262,42 @@ const makeQuota = (quota) => {
       "Meiste Anfragen aus einem Browser",
       quota.browsers.busiest,
       quota.browsers.limit,
-      `${nf.format(quota.browsers.active)} Browser heute aktiv, zusammen ${nf.format(quota.browsers.used)} Anfragen`
+      `${plural(quota.browsers.active, "Browser", "Browser")} heute aktiv, zusammen ${plural(quota.browsers.used, "Anfrage", "Anfragen")}`
     )
   );
   wrap.appendChild(perPerson);
+
+  const models = quota.models ?? [];
+  const perModel = makeQuotaGroup(
+    "Pro KI-Modell",
+    "Wie viele Antworten heute von welchem Modell kamen. Ein Balken steht nur " +
+      "dort, wo in server/models/<anbieter>.txt ein Tageslimit hinter der " +
+      "Modell-ID eingetragen ist — die Grenze gehört dem Anbieter, und eine " +
+      "geratene wäre schlimmer als gar keine."
+  );
+  if (models.length === 0) {
+    perModel.appendChild(el("p", "stats-empty", "Heute noch keine Antworten."));
+  } else {
+    for (const row of models) {
+      perModel.appendChild(
+        row.limit
+          ? makeMeter(row.model, row.used, row.limit)
+          : makeCountRow(row.model, row.used, "kein Tageslimit eingetragen")
+      );
+    }
+  }
+  wrap.appendChild(perModel);
 
   wrap.appendChild(
     el(
       "p",
       "stats-note",
-      "Zählt seit Mitternacht (UTC) und seit dem letzten Neustart des Dienstes — der " +
-        "spätere von beiden. Diese Zahlen werden nicht gespeichert."
+      "Codes und Personen zählen seit Mitternacht (UTC) und seit dem letzten Neustart " +
+        "des Dienstes — der spätere von beiden; diese Zahlen liegen nur im " +
+        "Arbeitsspeicher. Die Modellzahlen kommen aus den gespeicherten Tageszählern " +
+        "und überleben einen Neustart. Achtung: hier beginnt der Tag um Mitternacht " +
+        "UTC, bei Google zählt der Free Tier nach Pazifik-Zeit — die Balken können " +
+        "also gegeneinander verschoben sein."
     )
   );
   return wrap;
