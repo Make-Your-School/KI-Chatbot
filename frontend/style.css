@@ -143,6 +143,18 @@ button, .link-btn {
   margin: 0 auto;
 }
 
+/* Leerraum unter der letzten Antwort.
+   Nur so hoch, dass sich die zugehörige Frage an den oberen Rand schieben
+   lässt — die Höhe setzt app.js, hier steht nur, dass sie nicht wegschrumpfen
+   darf. Der negative Rand hebt den gap zwischen den Blasen wieder auf, sonst
+   bliebe auch bei Höhe 0 immer eine Zeile Leere stehen. */
+.messages-tail {
+  flex: 0 0 auto;
+  height: 0;
+  margin-top: -1rem;
+  pointer-events: none;
+}
+
 .starter-prompts {
   max-width: 48rem;
   width: 100%;

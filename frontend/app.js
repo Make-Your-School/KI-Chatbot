@@ -1147,11 +1147,87 @@ const renderAll = () => {
     }
     messagesEl.appendChild(bubble);
   }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  // Auch beim Wiederaufbau (Tab neu geladen, Verlauf aus dem Speicher) steht
+  // die letzte Frage oben statt am Fuß der letzten Antwort.
+  keepTailLast();
+  const anchor = lastQuestion();
+  if (anchor) pinToTop(anchor);
+  else scrollToBottom();
 };
+
+// ---------- Wohin nach dem Absenden gescrollt wird ----------
+//
+// Vorher sprang der Verlauf bei jedem Token ans Ende. Am Handy stand man damit
+// nach jeder Antwort an ihrem FUSS und musste erst hochscrollen, um sie von
+// vorn zu lesen — genau verkehrt herum.
+//
+// Jetzt wird die eigene Frage an den oberen Rand geschoben. Die Antwort wächst
+// darunter auf: man liest von oben nach unten und scrollt in die Richtung, in
+// die der Text läuft.
+//
+// Während des Streamens wird nicht mehr nachgescrollt. Einzige Ausnahme: wer
+// selbst ganz nach unten gescrollt ist, will offensichtlich beim Schreiben
+// zusehen — für den bleibt das alte Verhalten.
 
 const scrollToBottom = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
+};
+
+/**
+ * Leerraum am Ende des Verlaufs.
+ *
+ * Ohne ihn lässt sich die letzte Frage gar nicht nach oben schieben: ein
+ * Scroll-Container hört am Ende seines Inhalts auf. Der Platzhalter ist immer
+ * genau so hoch, dass es reicht — und keinen Pixel höher, sonst klafft unter
+ * einer kurzen Antwort ein leerer Bildschirm.
+ */
+const messagesTail = document.createElement("div");
+messagesTail.className = "messages-tail";
+messagesTail.setAttribute("aria-hidden", "true");
+
+const keepTailLast = () => {
+  if (messagesTail.parentNode !== messagesEl || messagesEl.lastChild !== messagesTail) {
+    messagesEl.appendChild(messagesTail);
+  }
+};
+
+/** Abstand eines Elements vom oberen Rand des Scroll-Inhalts. */
+const offsetWithin = (node) =>
+  node.getBoundingClientRect().top -
+  messagesEl.getBoundingClientRect().top +
+  messagesEl.scrollTop;
+
+/** Etwas Luft, damit die Frage nicht am Kopfbereich klebt. */
+const PIN_GAP = 8;
+
+/**
+ * Den Platzhalter auf die nötige Höhe bringen, damit `anchor` oben stehen kann.
+ *
+ * Erst auf 0 setzen, dann messen: sonst misst man die eigene Höhe von vorhin
+ * mit. Beides passiert im selben Frame, also ohne sichtbares Zucken.
+ */
+const growTail = (anchor) => {
+  if (!anchor || !anchor.isConnected) return;
+  keepTailLast();
+  messagesTail.style.height = "0px";
+  const below = messagesEl.scrollHeight - offsetWithin(anchor) + PIN_GAP;
+  messagesTail.style.height = `${Math.max(0, Math.ceil(messagesEl.clientHeight - below))}px`;
+};
+
+const pinToTop = (anchor) => {
+  if (!anchor || !anchor.isConnected) return;
+  growTail(anchor);
+  messagesEl.scrollTop = Math.max(0, offsetWithin(anchor) - PIN_GAP);
+};
+
+/** Ist der Verlauf (fast) ganz unten? Eine Zeile Spielraum reicht. */
+const nearBottom = () =>
+  messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 40;
+
+/** Die letzte eigene Frage — der Anker, an dem der Verlauf ausgerichtet wird. */
+const lastQuestion = () => {
+  const bubbles = messagesEl.querySelectorAll(".bubble.user");
+  return bubbles.length > 0 ? bubbles[bubbles.length - 1] : null;
 };
 
 // ---------- Login flow ----------
@@ -1223,11 +1299,12 @@ const sendMessage = async (text) => {
   history.push(userMsg);
   saveHistory(history);
   renderStarterPrompts();
-  messagesEl.appendChild(makeBubble("user", text));
+  const userBubble = makeBubble("user", text);
+  messagesEl.appendChild(userBubble);
 
   const typing = makeTypingBubble();
   messagesEl.appendChild(typing);
-  scrollToBottom();
+  pinToTop(userBubble);
 
   sendBtn.disabled = true;
   chatInput.disabled = true;
@@ -1294,8 +1371,13 @@ const sendMessage = async (text) => {
         if (event.type === "token") {
           replaceTypingWithBubble();
           assistantText += event.text;
+          const follow = nearBottom();
           setBubbleContent(assistantBubble, "assistant", assistantText, { streaming: true });
-          scrollToBottom();
+          // Der Platzhalter schrumpft, während die Antwort wächst. Weil er nur
+          // unterhalb der Frage liegt, bleibt die Frage dabei stehen, wo sie
+          // ist — das Schrumpfen ist von oben nicht zu sehen.
+          if (follow) scrollToBottom();
+          else growTail(userBubble);
         } else if (event.type === "sources") {
           sources = event.sources;
         } else if (event.type === "resources") {
@@ -1366,7 +1448,12 @@ const sendMessage = async (text) => {
     sendBtn.disabled = false;
     chatInput.disabled = false;
     chatInput.focus();
-    scrollToBottom();
+    // Karten, Bilder und Quellen kommen erst ganz zum Schluss dazu — der
+    // Platzhalter muss danach noch einmal nachgerechnet werden. Gescrollt wird
+    // hier nicht: wer inzwischen selbst irgendwohin gescrollt ist, soll dort
+    // bleiben.
+    keepTailLast();
+    growTail(userBubble);
   }
 };
 
