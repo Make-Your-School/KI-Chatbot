@@ -236,30 +236,167 @@ const makeQuota = (quota) => {
   return wrap;
 };
 
+// ---------- Verlaufskurven der Serverwerte ----------
+//
+// Eine Kurve pro Kachel, gut 100 Pixel breit: keine Achsen, keine Legende, kein
+// Raster. Die grosse Zahl darueber sagt "jetzt", die Kurve daneben sagt, ob das
+// jetzt normal ist. Mehr soll sie nicht.
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SPARK_W = 100;
+const SPARK_H = 22;
+
+const svgEl = (tag, attrs) => {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const key of Object.keys(attrs)) node.setAttribute(key, attrs[key]);
+  return node;
+};
+
+const clockLabel = (t) =>
+  new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * `pick` holt den Prozentwert aus einem Messpunkt und gibt null zurueck, wenn
+ * dieser Punkt die Kennzahl nicht hat (die Platte fehlt auf Maschinen ohne
+ * statfs). `onHover` bekommt den Text, der beim Ueberfahren erscheinen soll.
+ */
+const makeSpark = (history, pick, onHover) => {
+  const windowMs = (history?.windowHours ?? 24) * 3_600_000;
+  const from = Date.now() - windowMs;
+  const points = (history?.points ?? [])
+    .map((p) => ({ t: p.t, v: pick(p) }))
+    .filter((p) => Number.isFinite(p.v) && p.t >= from);
+  if (points.length === 0) return null;
+
+  // Prozente werden gegen die volle Skala gezeichnet, nicht gegen ihr eigenes
+  // Maximum: sonst sieht ein Tag zwischen 0 % und 2 % aus wie ein Gebirge. Nur
+  // wenn die Last ueber 100 % geht — mehr Arbeit als Kerne —, waechst die Skala
+  // mit, damit die Spitze nicht abgeschnitten wird.
+  const top = Math.max(100, ...points.map((p) => p.v));
+  const x = (t) => ((t - from) / windowMs) * SPARK_W;
+  const y = (v) => SPARK_H - (v / top) * SPARK_H;
+
+  const svg = svgEl("svg", {
+    class: "spark",
+    viewBox: `0 0 ${SPARK_W} ${SPARK_H}`,
+    // Die Kurve soll die Kachelbreite fuellen, egal wie breit die gerade ist.
+    // Dass die Striche dabei nicht mitverzerren, erledigt vector-effect im CSS.
+    preserveAspectRatio: "none",
+    role: "img",
+    focusable: "false",
+  });
+
+  svg.appendChild(svgEl("line", {
+    class: "spark-base",
+    x1: 0, y1: SPARK_H, x2: SPARK_W, y2: SPARK_H,
+  }));
+
+  // Fehlt laenger als zweieinhalb Messabstaende ein Punkt, wird die Kurve
+  // unterbrochen statt durchgezogen. Eine gerade Linie ueber eine Luecke waere
+  // eine Behauptung ueber eine Zeit, in der nichts gemessen wurde.
+  const maxGap = (history?.stepMinutes ?? 5) * 60_000 * 2.5;
+  const segments = [[points[0]]];
+  for (let i = 1; i < points.length; i += 1) {
+    if (points[i].t - points[i - 1].t > maxGap) segments.push([]);
+    segments[segments.length - 1].push(points[i]);
+  }
+
+  for (const segment of segments) {
+    const path = segment.map((p) => `${x(p.t).toFixed(2)},${y(p.v).toFixed(2)}`).join(" ");
+    if (segment.length > 1) {
+      svg.appendChild(svgEl("polygon", {
+        class: "spark-area",
+        points: `${x(segment[0].t).toFixed(2)},${SPARK_H} ${path} ${x(segment[segment.length - 1].t).toFixed(2)},${SPARK_H}`,
+      }));
+      svg.appendChild(svgEl("polyline", { class: "spark-line", points: path }));
+    } else {
+      // Ein einzelner Messpunkt ist keine Linie. Direkt nach einem Neustart ist
+      // das der Normalfall, und ein Punkt ist ehrlicher als nichts.
+      svg.appendChild(svgEl("circle", {
+        class: "spark-dot", cx: x(segment[0].t).toFixed(2), cy: y(segment[0].v).toFixed(2), r: 1.6,
+      }));
+    }
+  }
+
+  const last = points[points.length - 1];
+  svg.appendChild(svgEl("circle", {
+    class: "spark-head", cx: x(last.t).toFixed(2), cy: y(last.v).toFixed(2), r: 1.8,
+  }));
+
+  // Kein schwebendes Tooltip-Kaestchen: die Kachel hat schon eine Zeile fuer
+  // Kleingedrucktes, und die sagt beim Ueberfahren, welcher Wert wann war.
+  if (onHover) {
+    const marker = svgEl("line", {
+      class: "spark-cursor", x1: 0, y1: 0, x2: 0, y2: SPARK_H, visibility: "hidden",
+    });
+    svg.appendChild(marker);
+
+    svg.addEventListener("pointermove", (ev) => {
+      const box = svg.getBoundingClientRect();
+      if (box.width === 0) return;
+      const t = from + ((ev.clientX - box.left) / box.width) * windowMs;
+      let near = points[0];
+      for (const p of points) {
+        if (Math.abs(p.t - t) < Math.abs(near.t - t)) near = p;
+      }
+      marker.setAttribute("x1", x(near.t).toFixed(2));
+      marker.setAttribute("x2", x(near.t).toFixed(2));
+      marker.setAttribute("visibility", "visible");
+      onHover(`${clockLabel(near.t)} Uhr · ${Math.round(near.v)}%`);
+    });
+    svg.addEventListener("pointerleave", () => {
+      marker.setAttribute("visibility", "hidden");
+      onHover(null);
+    });
+  }
+
+  return svg;
+};
+
 const makeSystem = (sys) => {
   const wrap = el("section", "stats-card");
   wrap.appendChild(el("h2", null, "Server"));
   const grid = el("div", "stats-tiles");
 
-  const tile = (label, value, hint) => {
+  const tile = (label, value, hint, pick) => {
     const t = el("div", "stats-tile");
     t.appendChild(el("div", "stats-tile-value", value));
     t.appendChild(el("div", "stats-tile-label", label));
-    if (hint) t.appendChild(el("div", "stats-tile-hint", hint));
+    // Die Hinweiszeile gibt es auch ohne Hinweistext, sobald eine Kurve da ist:
+    // sie ist dann der Platz, an dem der überfahrene Messwert steht. Ohne sie
+    // würde die Kachel beim Überfahren um eine Zeile wachsen.
+    const hintEl = el("div", "stats-tile-hint", hint ?? "");
+    const spark = pick
+      ? makeSpark(sys.history, pick, (text) => {
+          hintEl.textContent = text ?? (hint ?? "");
+          hintEl.classList.toggle("is-reading", Boolean(text));
+        })
+      : null;
+    if (spark) t.appendChild(spark);
+    if (hint || spark) t.appendChild(hintEl);
     return t;
   };
 
-  grid.appendChild(tile("Auslastung jetzt", `${Math.round(sys.load1 * 100)}%`, `${sys.cpuCount} Kerne`));
-  grid.appendChild(tile("Auslastung 15 Min", `${Math.round(sys.load15 * 100)}%`));
-  grid.appendChild(tile("Arbeitsspeicher", `${sys.memUsedPercent}%`, `von ${sys.memTotalGb} GB`));
+  grid.appendChild(tile("Auslastung jetzt", `${Math.round(sys.load1 * 100)}%`, `${sys.cpuCount} Kerne`, (p) => p.load1));
+  grid.appendChild(tile("Auslastung 15 Min", `${Math.round(sys.load15 * 100)}%`, null, (p) => p.load15));
+  grid.appendChild(tile("Arbeitsspeicher", `${sys.memUsedPercent}%`, `von ${sys.memTotalGb} GB`, (p) => p.mem));
   if (sys.disk) {
-    grid.appendChild(tile("Festplatte", `${sys.disk.usedPercent}%`, `${sys.disk.freeGb} GB frei`));
+    grid.appendChild(tile("Festplatte", `${sys.disk.usedPercent}%`, `${sys.disk.freeGb} GB frei`, (p) => p.disk));
   }
+  // Keine Kurve: eine Laufzeit steigt einfach gleichmäßig an, die Linie wäre
+  // immer dieselbe Diagonale und sagt nichts, was die Zahl nicht sagt.
   grid.appendChild(tile("Läuft seit", `${sys.uptimeHours} h`));
 
   wrap.appendChild(grid);
   wrap.appendChild(
-    el("p", "stats-note", "Diese Werte sind Momentaufnahmen und werden nicht gespeichert.")
+    el(
+      "p",
+      "stats-note",
+      `Zahlen sind Momentaufnahmen, die Kurven zeigen die letzten ` +
+        `${sys.history?.windowHours ?? 24} Stunden (alle ${sys.history?.stepMinutes ?? 5} Minuten gemessen). ` +
+        "Beides liegt nur im Arbeitsspeicher und beginnt nach einem Neustart von vorn — " +
+        "ein kurzer Strich am rechten Rand heißt also: gerade neu gestartet."
+    )
   );
   return wrap;
 };

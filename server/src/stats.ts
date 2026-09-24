@@ -14,9 +14,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { freemem, loadavg, totalmem, cpus } from "node:os";
-import { statfsSync } from "node:fs";
 import { config } from "./config.ts";
+import { systemLoad, systemHistory } from "./system.ts";
 
 mkdirSync(dirname(config.stats.dbPath), { recursive: true });
 
@@ -121,38 +120,6 @@ const breakdown = (metric: Metric, from: string, to: string) =>
 const shiftDays = (n: number): string =>
   new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
 
-const systemLoad = () => {
-  const cpuCount = cpus().length || 1;
-  const total = totalmem();
-  const free = freemem();
-
-  let disk: { usedPercent: number; freeGb: number } | null = null;
-  try {
-    const fs = statfsSync(config.stats.dbPath.replace(/\/[^/]*$/, "") || ".");
-    const totalBytes = fs.blocks * fs.bsize;
-    const freeBytes = fs.bavail * fs.bsize;
-    if (totalBytes > 0) {
-      disk = {
-        usedPercent: Math.round(((totalBytes - freeBytes) / totalBytes) * 100),
-        freeGb: Math.round((freeBytes / 1e9) * 10) / 10,
-      };
-    }
-  } catch {
-    /* statfs is not available everywhere — the page copes with null */
-  }
-
-  return {
-    // Load average relative to core count: 1.0 means "fully busy".
-    load1: Math.round((loadavg()[0] / cpuCount) * 100) / 100,
-    load15: Math.round((loadavg()[2] / cpuCount) * 100) / 100,
-    cpuCount,
-    memUsedPercent: Math.round(((total - free) / total) * 100),
-    memTotalGb: Math.round((total / 1e9) * 10) / 10,
-    disk,
-    uptimeHours: Math.round(process.uptime() / 360) / 10,
-  };
-};
-
 /**
  * Provider/model counts for each selectable range. All three are sent at once —
  * they are a handful of rows, and shipping them together lets the page switch
@@ -189,6 +156,8 @@ export const summary = () => {
     daily,
     providers: breakdownByRange("provider", today),
     models: breakdownByRange("model", today),
-    system: systemLoad(),
+    // Momentaufnahme plus Verlauf: die Zahl sagt "jetzt", die Kurve daneben
+    // sagt, ob das jetzt normal ist.
+    system: { ...systemLoad(), history: systemHistory() },
   };
 };

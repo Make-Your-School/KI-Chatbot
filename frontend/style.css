@@ -729,6 +729,65 @@ button, .link-btn {
   font-size: .66rem;
   color: var(--fg-muted);
   opacity: .8;
+  /* Feste Höhe: die Zeile wird beim Überfahren der Kurve zum Messwert und
+     zurück. Ohne das springt die Kachel bei jeder Mausbewegung. */
+  min-height: 1em;
+}
+/* Der abgelesene Messwert ist kein Kleingedrucktes mehr, sondern die Antwort
+   auf "was war da los?" — also in normaler Schriftfarbe und mit Ziffern in
+   fester Breite, damit er beim Wandern der Maus nicht zappelt. */
+.stats-tile-hint.is-reading {
+  color: var(--fg);
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Verlaufskurve in der Kachel: keine Achsen, kein Raster, keine Legende.
+   Eine Reihe, also braucht sie keinen eigenen Farbschlüssel — die Beschriftung
+   der Kachel sagt schon, was da gezeichnet ist. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 22px;
+  margin: .35rem 0 .2rem;
+  overflow: visible;
+  touch-action: pan-y;
+}
+/* preserveAspectRatio="none" streckt die Zeichenfläche auf die Kachelbreite und
+   würde die Striche mitverzerren — non-scaling-stroke hält sie überall gleich
+   dünn. */
+.spark line,
+.spark polyline,
+.spark circle {
+  vector-effect: non-scaling-stroke;
+}
+.spark-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.spark-area {
+  fill: var(--accent);
+  opacity: .14;
+  stroke: none;
+}
+/* Nulllinie: ohne sie sieht eine Kachel mit durchgehend 0 % aus, als wäre die
+   Grafik kaputt statt ruhig. */
+.spark-base {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.spark-dot,
+.spark-head {
+  fill: var(--accent);
+  stroke: none;
+}
+.spark-cursor {
+  stroke: var(--fg-muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
 }
 
 @media (max-width: 480px) {
