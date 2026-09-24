@@ -387,6 +387,23 @@ const serveLinkAsset = async (c: Context, kind: AssetKind) => {
 app.get("/api/link-preview/:id", c => serveLinkAsset(c, "preview"));
 app.get("/api/link-icon/:id", c => serveLinkAsset(c, "icon"));
 
+// Die Oberflaeche darf nicht im Browser-Cache haengenbleiben.
+//
+// Ohne Cache-Control raet der Browser, wie lange er eine Datei behalten darf —
+// ueblich sind 10 % ihres Alters, bei einer eine Woche alten app.js also rund
+// 17 Stunden. Hier wird direkt auf die Produktion deployt und notfalls
+// zurueckgerollt; eine Aenderung, die erst am naechsten Tag ankommt, macht aus
+// jedem Deploy ein Raten, ob man gerade die neue oder die alte Version sieht.
+//
+// "no-cache" heisst nicht "nicht speichern", sondern "vor jeder Benutzung
+// nachfragen". Hat sich nichts geaendert, antwortet der Server mit 304 und
+// schickt die Datei gar nicht — es kostet also eine Anfrage, keinen Download.
+app.use("/*", async (c, next) => {
+  await next();
+  if (c.req.path.startsWith("/api/")) return;
+  c.header("Cache-Control", "no-cache");
+});
+
 app.get("/stats", serveStatic({ path: `${config.frontend.distPath}/stats.html` }));
 app.use("/*", serveStatic({ root: config.frontend.distPath }));
 app.use("/", serveStatic({ path: `${config.frontend.distPath}/index.html` }));
