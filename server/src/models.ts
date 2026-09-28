@@ -1,6 +1,6 @@
 // Provider-Modell-Listen mit Live-Reload.
 //
-// Beide Provider haben eine git-versionierte Modell-Liste unter
+// Alle Provider haben eine git-versionierte Modell-Liste unter
 // server/models/<provider>.txt. Die Datei wird bei jedem Aufruf gestat()ed
 // und nur bei mtime-Änderung neu eingelesen — d.h. live editierbar (oder
 // per `git pull` aktualisierbar) ohne Service-Restart.
@@ -23,7 +23,7 @@
 import { existsSync, statSync, readFileSync } from "fs";
 import { resolve } from "path";
 
-export type Provider = "openrouter" | "gemini";
+export type Provider = "openrouter" | "gemini" | "mistral";
 
 const MODELS_DIR = process.env.MODELS_DIR ?? "./models";
 
@@ -32,6 +32,7 @@ const MODELS_DIR = process.env.MODELS_DIR ?? "./models";
 const HARDCODED_FALLBACK: Record<Provider, string[]> = {
   openrouter: ["meta-llama/llama-3.3-70b-instruct:free"],
   gemini: ["gemini-2.5-flash", "gemini-2.0-flash"],
+  mistral: ["mistral-small-latest"],
 };
 
 type Cache = {
@@ -52,6 +53,7 @@ const emptyCache = (provider: Provider): Cache => ({
 const caches: Record<Provider, Cache> = {
   openrouter: emptyCache("openrouter"),
   gemini: emptyCache("gemini"),
+  mistral: emptyCache("mistral"),
 };
 
 type ParsedList = { models: string[]; limits: Map<string, number> };
@@ -132,15 +134,16 @@ export function getModels(provider: Provider): string[] {
 }
 
 /**
- * Die eingetragenen Tageslimits, über beide Anbieter zusammengelegt.
+ * Die eingetragenen Tageslimits, über alle Anbieter zusammengelegt.
  *
  * Modell-IDs kollidieren zwischen den Anbietern nicht (OpenRouter hängt immer
- * ein "anbieter/" davor), deshalb reicht eine Map. getModels() vorher aufrufen
+ * ein "anbieter/" davor, Gemini und Mistral heißen nach sich selbst), deshalb
+ * reicht eine Map. getModels() vorher aufrufen
  * erledigt das Nachladen bei geänderter Datei — der Cache ist derselbe.
  */
 export const getModelLimits = (): Map<string, number> => {
   const all = new Map<string, number>();
-  for (const provider of ["gemini", "openrouter"] as Provider[]) {
+  for (const provider of ["gemini", "mistral", "openrouter"] as Provider[]) {
     getModels(provider);
     for (const [id, limit] of caches[provider].limits) all.set(id, limit);
   }

@@ -40,6 +40,13 @@ db.prepare("DELETE FROM stats_daily WHERE day < ?").run(
 export type Metric =
   | "chat"
   | "chat_error"
+  // Teil-Antwort mit Hinweis: ein Modell brach ab, ein neuer Anlauf half nicht.
+  | "chat_truncated"
+  // Ein Modell brach mitten in der Antwort ab, ein anderes wurde gefragt.
+  | "retry"
+  // Jeder Fehlversuch bei einem Modell, auch die, die der Nutzer nie sieht,
+  // weil das naechste Modell einsprang. dim = "Grund · Modell".
+  | "provider_error"
   | "login_ok"
   | "login_fail"
   | "rate_limited"
@@ -70,6 +77,9 @@ export const record = (metric: Metric, dim = ""): void => {
 export type Totals = {
   chat: number;
   chatError: number;
+  chatTruncated: number;
+  retry: number;
+  providerError: number;
   loginOk: number;
   loginFail: number;
   rateLimited: number;
@@ -78,13 +88,17 @@ export type Totals = {
 };
 
 const EMPTY: Totals = {
-  chat: 0, chatError: 0, loginOk: 0, loginFail: 0,
+  chat: 0, chatError: 0, chatTruncated: 0, retry: 0, providerError: 0,
+  loginOk: 0, loginFail: 0,
   rateLimited: 0, ragHit: 0, ragMiss: 0,
 };
 
 const METRIC_TO_FIELD: Record<string, keyof Totals> = {
   chat: "chat",
   chat_error: "chatError",
+  chat_truncated: "chatTruncated",
+  retry: "retry",
+  provider_error: "providerError",
   login_ok: "loginOk",
   login_fail: "loginFail",
   rate_limited: "rateLimited",
@@ -143,11 +157,12 @@ const shiftDays = (n: number): string =>
   new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
 
 /**
- * Provider/model counts for each selectable range. All three are sent at once —
+ * Provider/model/error counts for each selectable range. All ranges are sent at once —
  * they are a handful of rows, and shipping them together lets the page switch
  * ranges without another round trip.
  */
 const breakdownByRange = (metric: Metric, today: string) => ({
+  today: breakdown(metric, today, today),
   d30: breakdown(metric, shiftDays(29), today),
   month: breakdown(metric, today.slice(0, 8) + "01", today),
   year: breakdown(metric, today.slice(0, 4) + "-01-01", today),
@@ -178,6 +193,7 @@ export const summary = () => {
     daily,
     providers: breakdownByRange("provider", today),
     models: breakdownByRange("model", today),
+    errors: breakdownByRange("provider_error", today),
     // Momentaufnahme plus Verlauf: die Zahl sagt "jetzt", die Kurve daneben
     // sagt, ob das jetzt normal ist.
     system: { ...systemLoad(), history: systemHistory() },

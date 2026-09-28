@@ -304,6 +304,8 @@ app.post("/api/chat", async c => {
             stats.record("model", ev.model);
           }
           if (ev.type === "error") stats.record("chat_error");
+          if (ev.type === "retry") stats.record("retry");
+          if (ev.type === "done" && ev.truncated) stats.record("chat_truncated");
           if (!write(ev)) break;
           if (ev.type === "done" || ev.type === "error") {
             stats.record(sawSources ? "rag_hit" : "rag_miss");
@@ -428,12 +430,13 @@ app.use("/", serveStatic({ path: `${config.frontend.distPath}/index.html` }));
 console.log(`[ki-hackdays] listening on http://${config.host}:${config.port}`);
 const activeProviders = config.providerOrder.filter((p: string) => {
   if (p === "gemini") return !!config.gemini.apiKey;
+  if (p === "mistral") return !!config.mistral.apiKey;
   if (p === "openrouter") return !!config.openRouter.apiKey;
   return false;
 });
 console.log(`[ki-hackdays] provider chain: ${activeProviders.join(" -> ") || "(none!)"}`);
 for (const p of activeProviders) {
-  if (p !== "gemini" && p !== "openrouter") continue;
+  if (p !== "gemini" && p !== "mistral" && p !== "openrouter") continue;
   console.log(
     `[ki-hackdays] ${p} models: ${getModels(p).join(", ")} (live from ${modelsFilePath(p)})`
   );

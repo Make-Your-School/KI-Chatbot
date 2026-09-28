@@ -1,0 +1,33 @@
+# Mistral La Plateforme Modell-Fallback-Liste für den Mentor*innen KI Chat.
+#
+# Diese Datei ist git-versioniert. Änderungen entweder lokal committen und
+# auf dem Server `git pull`, oder direkt auf dem Server editieren (dann aber
+# zurückcommitten, sonst gehen sie beim nächsten Pull verloren).
+#
+# Der Server liest die Datei live (mtime-cached) — kein Restart nötig.
+# Aktiv ist Mistral nur, wenn MISTRAL_API_KEY in der .env steht und "mistral"
+# in PROVIDER_ORDER vorkommt.
+#
+# Format wie bei gemini.txt:
+#   - Eine Modell-ID pro Zeile, in Reihenfolge der Bevorzugung
+#   - Mistral macht kein Server-Side-Routing — der Server probiert selbst das
+#     nächste, wenn eins 429 oder 5xx zurückgibt
+#   - `#` kommentiert den Rest der Zeile aus, Leerzeilen werden ignoriert
+#   - Optional dahinter das Tageslimit des Anbieters (nur Anzeige in /stats)
+#
+# Wo finde ich Modell-IDs und Limits?
+#   https://docs.mistral.ai/getting-started/models  → Spalte "API Endpoints"
+#   Deine echten Limits: https://console.mistral.ai → Limits
+#   Was dein Key wirklich kann:
+#     curl -s https://api.mistral.ai/v1/models -H "Authorization: Bearer $MISTRAL_API_KEY"
+#
+# "-latest" zeigt immer auf die aktuelle Version. Das spart das Nachpflegen,
+# heißt aber auch: ein Versionswechsel bei Mistral ändert das Verhalten ohne
+# Commit hier. Im Chat steht unter jeder Antwort, welches Modell geliefert hat.
+# ---------------------------------------------------------------------------
+
+# Erstwahl: Mistral Small — klein, schnell, gut auf Deutsch
+mistral-small-latest
+
+# Noch kleiner, als Rückfall wenn Small dicht ist
+ministral-8b-latest

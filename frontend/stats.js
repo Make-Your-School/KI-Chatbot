@@ -44,7 +44,10 @@ const ROW_LABELS = [
   ["loginOk", "Logins erfolgreich"],
   ["loginFail", "Logins fehlgeschlagen"],
   ["rateLimited", "Limit erreicht"],
-  ["chatError", "Fehler bei der Antwort"],
+  ["chatError", "Antwort fehlgeschlagen (rote Meldung)"],
+  ["chatTruncated", "Antwort abgebrochen (Teil-Antwort)"],
+  ["retry", "Neuer Anlauf nach Abbruch"],
+  ["providerError", "Fehlversuche bei KI-Modellen"],
 ];
 
 const makeTable = (data) => {
@@ -94,6 +97,7 @@ const makeChart = (daily) => {
 };
 
 const BREAKDOWN_RANGES = [
+  ["today", "Heute"],
   ["d30", "30 Tage"],
   ["month", "Monat"],
   ["year", "Jahr"],
@@ -119,10 +123,10 @@ const makeBars = (rows, emptyText) => {
 };
 
 /**
- * byRange is {d30, month, year}. All three arrive with the response, so the
- * buttons only swap what is rendered — no further request.
+ * byRange is {today, d30, month, year}. All of them arrive with the response,
+ * so the buttons only swap what is rendered — no further request.
  */
-const makeBreakdown = (title, byRange, emptyText) => {
+const makeBreakdown = (title, byRange, emptyText, explain) => {
   const wrap = el("section", "stats-card");
 
   const head = el("div", "stats-cardhead");
@@ -153,6 +157,7 @@ const makeBreakdown = (title, byRange, emptyText) => {
 
   head.appendChild(toggle);
   wrap.appendChild(head);
+  if (explain) wrap.appendChild(el("p", "quota-group-note", explain));
   wrap.appendChild(body);
   show("d30");
   return wrap;
@@ -483,6 +488,18 @@ const render = (data) => {
   );
   statsBody.appendChild(
     makeBreakdown("Modelle", data.models, "Noch keine Antworten gezählt.")
+  );
+  statsBody.appendChild(
+    makeBreakdown(
+      "Fehler bei KI-Modellen",
+      data.errors,
+      "Keine Fehler gezählt.",
+      "Jeder Versuch, der schiefging — auch die, von denen niemand etwas " +
+        "gemerkt hat, weil das nächste Modell eingesprungen ist. " +
+        "HTTP 503 = Modell überlastet, 429 = Tageslimit beim Anbieter erreicht. " +
+        "„Abbruch“ heißt: das Modell hat angefangen zu antworten und ist mittendrin " +
+        "stehen geblieben."
+    )
   );
   statsBody.appendChild(makeSystem(data.system));
 

@@ -9,10 +9,11 @@ const flag = (name: string): boolean => /^(1|true|yes|on)$/i.test(process.env[na
 
 const openRouterApiKey = optional("OPENROUTER_API_KEY");
 const geminiApiKey = optional("GEMINI_API_KEY");
+const mistralApiKey = optional("MISTRAL_API_KEY");
 
-if (!openRouterApiKey && !geminiApiKey) {
+if (!openRouterApiKey && !geminiApiKey && !mistralApiKey) {
   throw new Error(
-    "Kein LLM-Anbieter konfiguriert. Setze GEMINI_API_KEY und/oder OPENROUTER_API_KEY in der .env."
+    "Kein LLM-Anbieter konfiguriert. Setze GEMINI_API_KEY, MISTRAL_API_KEY und/oder OPENROUTER_API_KEY in der .env."
   );
 }
 
@@ -43,8 +44,9 @@ export const config = {
 
   // Reihenfolge, in der Anbieter probiert werden. Erster Treffer mit gültigem
   // API-Key gewinnt; bei Fehler/Timeout fällt es auf den nächsten durch.
-  // Default: Gemini zuerst (free tier ist meist stabiler), OpenRouter als Backup.
-  providerOrder: (process.env.PROVIDER_ORDER ?? "gemini,openrouter")
+  // Default: Gemini zuerst (free tier ist meist stabiler), dann Mistral,
+  // OpenRouter als letztes Backup. Anbieter ohne Key werden übersprungen.
+  providerOrder: (process.env.PROVIDER_ORDER ?? "gemini,mistral,openrouter")
     .split(",")
     .map((s: string) => s.trim().toLowerCase())
     .filter(Boolean),
@@ -66,6 +68,15 @@ export const config = {
     // Modell-Liste lebt git-versioniert in server/models/gemini.txt und
     // wird live von src/models.ts gelesen — siehe getModels("gemini").
     apiKey: geminiApiKey,
+  },
+
+  mistral: {
+    // Mistral La Plateforme, Gratis-Modus ohne Kreditkarte. Key holen unter
+    // https://console.mistral.ai/api-keys — OpenAI-kompatibler Endpoint.
+    //
+    // Modell-Liste lebt git-versioniert in server/models/mistral.txt und
+    // wird live von src/models.ts gelesen — siehe getModels("mistral").
+    apiKey: mistralApiKey,
   },
 
   auth: {

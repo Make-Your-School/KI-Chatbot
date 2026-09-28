@@ -627,7 +627,29 @@ const makeTypingBubble = () => {
 const providerLabel = (provider) => {
   if (provider === "gemini") return "Gemini";
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "mistral") return "Mistral";
   return provider || "?";
+};
+
+// Unter einer Antwort, die mittendrin abgebrochen ist und die auch ein zweites
+// Modell nicht fertig bekommen hat. Der Text darueber bleibt stehen — ein
+// halber Schaltplan hilft oft schon weiter.
+const makeTruncatedNote = () => {
+  const div = document.createElement("div");
+  div.className = "msg-truncated";
+  div.textContent = "Die Antwort wurde abgebrochen. Frag am besten gleich nochmal.";
+  return div;
+};
+
+// Waehrend ein anderes Modell gefragt wird. Die Teil-Antwort bleibt blass
+// stehen, bis das neue Modell sein erstes Wort schickt.
+const makeRetryNote = () => {
+  const div = document.createElement("div");
+  div.className = "msg-retry";
+  div.innerHTML =
+    '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+  div.appendChild(document.createTextNode(" Abgebrochen – ich frage ein anderes Modell …"));
+  return div;
 };
 
 const makeMetaBlock = (meta) => {
@@ -1142,6 +1164,7 @@ const renderAll = () => {
       if (resources) bubble.appendChild(resources);
       const src = makeSourcesBlock(msg.sources);
       if (src) bubble.appendChild(src);
+      if (msg.truncated) bubble.appendChild(makeTruncatedNote());
       const meta = makeMetaBlock(msg.meta);
       if (meta) bubble.appendChild(meta);
     }
@@ -1316,6 +1339,8 @@ const sendMessage = async (text) => {
   let images = [];
   let example = null;
   let modelMeta = null; // { provider, model } once received
+  let truncated = false;
+  let retryNote = null; // steht da, solange ein anderes Modell gefragt wird
 
   const replaceTypingWithBubble = () => {
     if (assistantBubble) return;
@@ -1370,6 +1395,13 @@ const sendMessage = async (text) => {
         }
         if (event.type === "token") {
           replaceTypingWithBubble();
+          if (retryNote) {
+            // Das neue Modell faengt von vorn an, also auch der Text.
+            retryNote.remove();
+            retryNote = null;
+            assistantBubble.classList.remove("is-retrying");
+            assistantText = "";
+          }
           assistantText += event.text;
           const follow = nearBottom();
           setBubbleContent(assistantBubble, "assistant", assistantText, { streaming: true });
@@ -1388,6 +1420,12 @@ const sendMessage = async (text) => {
           example = event.example || null;
         } else if (event.type === "model") {
           modelMeta = { provider: event.provider, model: event.model };
+        } else if (event.type === "retry") {
+          if (assistantBubble && !retryNote) {
+            assistantBubble.classList.add("is-retrying");
+            retryNote = makeRetryNote();
+            assistantBubble.appendChild(retryNote);
+          }
         } else if (event.type === "error") {
           if (typing.parentNode) typing.remove();
           const errBubble = document.createElement("div");
@@ -1399,12 +1437,18 @@ const sendMessage = async (text) => {
           renderStarterPrompts();
           return;
         } else if (event.type === "done") {
-          /* handled below */
+          truncated = Boolean(event.truncated);
         }
       }
     }
 
     if (typing.parentNode) typing.remove();
+    if (retryNote) {
+      // Kein anderes Modell hat geantwortet: die Teil-Antwort gilt.
+      retryNote.remove();
+      retryNote = null;
+      assistantBubble.classList.remove("is-retrying");
+    }
     if (assistantText) {
       const presentation = getAssistantPresentation(assistantText, resources);
       history.push({
@@ -1415,6 +1459,7 @@ const sendMessage = async (text) => {
         example: example || undefined,
         resources: resources.length > 0 ? resources : undefined,
         sources: sources.length > 0 ? sources : undefined,
+        truncated: truncated || undefined,
       });
       saveHistory(history);
       if (assistantBubble) {
@@ -1431,6 +1476,7 @@ const sendMessage = async (text) => {
         if (resourcesBlock) assistantBubble.appendChild(resourcesBlock);
         const srcBlock = makeSourcesBlock(sources);
         if (srcBlock) assistantBubble.appendChild(srcBlock);
+        if (truncated) assistantBubble.appendChild(makeTruncatedNote());
         const metaBlock = makeMetaBlock(modelMeta);
         if (metaBlock) assistantBubble.appendChild(metaBlock);
       }

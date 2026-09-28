@@ -369,8 +369,9 @@ Mindestens diese Zeilen müssen korrekt gesetzt sein:
 
 ```
 GEMINI_API_KEY=AIzaSy...                 # empfohlen, kostenlos
+MISTRAL_API_KEY=...                      # optional, Gratis-Modus, zweiter Anbieter
 OPENROUTER_API_KEY=sk-or-v1-...          # optional, dient als Fallback
-PROVIDER_ORDER=gemini,openrouter         # Reihenfolge der Versuche
+PROVIDER_ORDER=gemini,mistral,openrouter # Reihenfolge der Versuche
 AUTH_SECRET=...                          # wurde oben bereits gesetzt
 NODE_ENV=production
 HOST=127.0.0.1                           # WICHTIG: nicht 0.0.0.0
@@ -754,6 +755,7 @@ Die Unit baut die Embedding-Datenbank neu und startet danach den Chat-Service au
 Modell-Listen leben git-versioniert unter `/opt/ki-hackdays/server/models/`:
 
 - `gemini.txt` — Gemini-Modelle in Fallback-Reihenfolge
+- `mistral.txt` — Mistral-Modelle in Fallback-Reihenfolge
 - `openrouter.txt` — OpenRouter-Modelle in Fallback-Reihenfolge
 
 Eine Modell-ID pro Zeile, `#` ist Kommentar. Beide Dateien werden vom Server **live** gelesen (mtime-cached) — Änderung ist beim nächsten Chat-Request aktiv, kein Restart nötig.

@@ -302,6 +302,23 @@ button, .link-btn {
   text-underline-offset: 2px;
 }
 
+/* Ein Modell ist abgebrochen, ein anderes wird gefragt. */
+.bubble.is-retrying > .bubble-content { opacity: .45; transition: opacity .2s; }
+.msg-retry {
+  font-size: .8rem;
+  color: var(--fg-muted);
+  margin-top: .6rem;
+}
+.msg-retry .typing-dot { width: 5px; height: 5px; }
+.msg-truncated {
+  font-size: .8rem;
+  color: var(--error);
+  margin-top: .6rem;
+}
+@media (prefers-color-scheme: dark) {
+  .msg-truncated { color: #ff9b9b; }
+}
+
 .msg-meta {
   font-size: .7rem;
   color: var(--fg-muted);

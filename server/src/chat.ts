@@ -5,15 +5,16 @@
 // generator. The index.ts route wraps the generator in a Server-Sent Events
 // response for the browser.
 //
-// Provider chain: tries Google AI Studio (Gemini, OpenAI-kompatibler Endpoint)
-// und OpenRouter in der durch config.providerOrder festgelegten Reihenfolge.
-// Beide sprechen das OpenAI-SSE-Format, daher ist das Streaming-Handling unten
+// Provider chain: tries Google AI Studio (Gemini, OpenAI-kompatibler Endpoint),
+// Mistral und OpenRouter in der durch config.providerOrder festgelegten
+// Reihenfolge. Alle drei sprechen das OpenAI-SSE-Format, daher ist das Streaming-Handling unten
 // einheitlich. Bei Fehler/Timeout/4xx eines Versuchs wird der nächste probiert.
 
 import { config } from "./config.ts";
 import { previewId } from "./linkPreviews.ts";
 import { debugContentLog, debugLog } from "./debug.ts";
 import { getModels, type Provider } from "./models.ts";
+import * as stats from "./stats.ts";
 import {
   classifyStatus,
   isHealthy,
@@ -100,7 +101,13 @@ export type ChatStreamEvent =
   | { type: "images"; images: ImageHint[] }
   | { type: "example"; example: ExampleCode }
   | { type: "model"; provider: Provider; model: string }
-  | { type: "done" }
+  // Ein Modell ist mittendrin abgebrochen, ein anderes wird gefragt. Die Teil-
+  // Antwort bleibt sichtbar, bis das naechste Modell sein erstes Wort liefert —
+  // findet sich keins, ist sie immer noch besser als nichts.
+  | { type: "retry" }
+  // truncated: die Antwort ist unvollstaendig, und ein neuer Anlauf hat nicht
+  // geklappt oder war nicht sinnvoll.
+  | { type: "done"; truncated?: boolean }
   | { type: "error"; message: string };
 
 const MAX_HISTORY = 20; // cap how much we forward to avoid prompt bloat
@@ -136,37 +143,60 @@ type Attempt = {
 
 type OpenAIMessage = { role: "system" | "user" | "assistant"; content: string };
 
+// Google AI Studio und Mistral kennen kein server-seitiges Model-Routing, also
+// legen wir pro Modell einen eigenen Versuch an. Modelle die kürzlich 429/5xx
+// oder Netzwerkfehler hatten, überspringen wir für die Cooldown-Dauer. Falls
+// dadurch NICHTS übrig bleibt, probieren wir trotzdem alle — besser ein teurer
+// Retry als "kein Anbieter verfügbar".
+const perModelAttempts = (
+  provider: Provider,
+  url: string,
+  apiKey: string,
+  messages: OpenAIMessage[]
+): Attempt[] => {
+  const allModels = getModels(provider);
+  const healthy = allModels.filter(isHealthy);
+  const modelsToUse = healthy.length > 0 ? healthy : allModels;
+  if (healthy.length < allModels.length) {
+    debugLog("chat", `skipping unhealthy ${provider} models`, {
+      skipped: allModels.filter(m => !isHealthy(m)),
+      unhealthy: listUnhealthy(),
+    });
+  }
+  return modelsToUse.map(model => ({
+    provider,
+    fallbackModel: model,
+    label: `${provider}/${model}`,
+    url,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: { model, messages, stream: true },
+  }));
+};
+
+// Nur Anbieter mit einem Versuch pro Modell haben einen Gesundheitszustand pro
+// Modell. OpenRouter faellt selbst durch seine Liste.
+const tracksHealth = (attempt: Attempt): boolean => attempt.provider !== "openrouter";
+
 const buildAttempts = (messages: OpenAIMessage[]): Attempt[] => {
   const attempts: Attempt[] = [];
   for (const provider of config.providerOrder) {
     if (provider === "gemini" && config.gemini.apiKey) {
-      // Google AI Studio kennt kein server-seitiges Model-Routing, also
-      // legen wir pro Modell einen eigenen Versuch an. Modelle die kürzlich
-      // 429/5xx oder Netzwerkfehler hatten, überspringen wir für die Cooldown-
-      // Dauer. Falls dadurch NICHTS übrig bleibt, probieren wir trotzdem alle
-      // — besser ein teurer Retry als "kein Anbieter verfügbar".
-      const allModels = getModels("gemini");
-      const healthy = allModels.filter(isHealthy);
-      const modelsToUse = healthy.length > 0 ? healthy : allModels;
-      if (healthy.length < allModels.length) {
-        debugLog("chat", "skipping unhealthy gemini models", {
-          skipped: allModels.filter(m => !isHealthy(m)),
-          unhealthy: listUnhealthy(),
-        });
-      }
-      for (const model of modelsToUse) {
-        attempts.push({
-          provider: "gemini",
-          fallbackModel: model,
-          label: `gemini/${model}`,
-          url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.gemini.apiKey}`,
-          },
-          body: { model, messages, stream: true },
-        });
-      }
+      attempts.push(...perModelAttempts(
+        "gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        config.gemini.apiKey,
+        messages
+      ));
+    } else if (provider === "mistral" && config.mistral.apiKey) {
+      attempts.push(...perModelAttempts(
+        "mistral",
+        "https://api.mistral.ai/v1/chat/completions",
+        config.mistral.apiKey,
+        messages
+      ));
     } else if (provider === "openrouter" && config.openRouter.apiKey) {
       // OpenRouter kann mit `models: [...]` selbst durch die Liste fallen,
       // daher reicht ein einziger Versuch für alle OpenRouter-Modelle.
@@ -842,6 +872,163 @@ const pickFocusedRepos = (
   return [top, ...rest].slice(0, MAX_FOCUSED_REPOS).map(([repo]) => repo);
 };
 
+// Wie ein Stream zu Ende ging. Nur "stop" ist eine fertige Antwort.
+type StreamEnd =
+  | "stop"
+  | "length"          // Token-Grenze des Modells erreicht
+  | "content_filter"  // Filter des Anbieters hat abgebrochen
+  | "error"           // Fehler-Stueck mitten im Stream (OpenRouter schickt die so)
+  | "cut"             // Verbindung weg, ohne dass der Anbieter "fertig" gesagt hat
+  | "empty";          // sauber beendet, aber kein einziges Wort
+
+// Fuer Statistik und Log. Die Statistik zeigt diese Texte direkt an.
+const END_LABEL: Record<StreamEnd, string> = {
+  stop: "fertig",
+  length: "Abbruch: zu lang",
+  content_filter: "Abbruch: Filter",
+  error: "Abbruch: Fehler im Stream",
+  cut: "Abbruch: Verbindung weg",
+  empty: "Leere Antwort",
+};
+
+// Hoechstens so viele neue Anlaeufe, nachdem ein Modell mittendrin abgebrochen
+// ist. Jeder Anlauf kostet eine weitere Anfrage beim Anbieter, und wenn der
+// gerade ueberlastet ist, bricht der naechste gern genauso ab.
+const MAX_STREAM_RETRIES = 1;
+
+const classifyFinish = (reason: string): StreamEnd => {
+  const r = reason.toLowerCase();
+  if (r === "stop") return "stop";
+  // Mistral meldet mit model_length dasselbe wie die anderen mit length.
+  if (r === "length" || r === "model_length") return "length";
+  if (r === "content_filter") return "content_filter";
+  return "error";
+};
+
+// Fehlversuche beim Verbindungsaufbau. Bei OpenRouter ist das ein Versuch fuer
+// die ganze Liste, da gibt es kein einzelnes Modell zu nennen.
+const recordProviderError = (attempt: Attempt, reason: string): void => {
+  const who = tracksHealth(attempt) ? attempt.fallbackModel : "openrouter";
+  stats.record("provider_error");
+  stats.record("provider_error", `${reason} · ${who}`);
+};
+
+type StreamResult = {
+  end: StreamEnd;
+  chars: number;
+  /** Das Modell, das wirklich geantwortet hat (OpenRouter waehlt selbst). */
+  model: string;
+  detail: string;
+};
+
+/**
+ * Liest den SSE-Stream eines Anbieters, gibt die Woerter weiter und meldet am
+ * Ende, wie der Stream ausging.
+ *
+ * Das model-Event geht erst mit dem ersten Wort raus: bricht ein Modell ab,
+ * bevor es etwas gesagt hat, soll es weder in der Statistik als "hat
+ * geantwortet" zaehlen noch unter der Antwort stehen.
+ */
+async function* readProviderStream(
+  resp: Response,
+  attempt: Attempt
+): AsyncGenerator<ChatStreamEvent, StreamResult> {
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  // Alle Provider echoen das Modell im Chunk-JSON unter `model`. Fehlt es,
+  // bleibt die beste Schaetzung aus dem Versuch.
+  let model = attempt.fallbackModel;
+  let modelSeen = false;
+  let modelEventSent = false;
+  let chars = 0;
+  let preview = "";
+  let finish: StreamEnd | null = null;
+  let detail = "";
+  let sawDone = false;
+
+  try {
+    read: while (true) {
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        detail = (err as Error).message;
+        break;
+      }
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+
+      // Alle Provider streamen OpenAI-style SSE: Zeilen `data: {...}`,
+      // Terminator `data: [DONE]`.
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") {
+          sawDone = true;
+          break read;
+        }
+        let json: any;
+        try {
+          json = JSON.parse(payload);
+        } catch {
+          continue; // Keepalives, Kommentarzeilen, kaputte Fragmente
+        }
+        if (!modelSeen && typeof json.model === "string" && json.model.length > 0) {
+          model = json.model;
+          modelSeen = true;
+        }
+        if (json.error) {
+          finish = "error";
+          detail = String(json.error.message ?? json.error.code ?? "").slice(0, 200);
+          break read;
+        }
+        const choice = json.choices?.[0];
+        const delta = choice?.delta?.content;
+        if (typeof delta === "string" && delta.length > 0) {
+          if (!modelEventSent) {
+            modelEventSent = true;
+            debugLog("chat", "model event", { provider: attempt.provider, model });
+            yield { type: "model", provider: attempt.provider, model };
+          }
+          chars += delta.length;
+          if (preview.length < 1000) preview += delta;
+          yield { type: "token", text: delta };
+        }
+        if (typeof choice?.finish_reason === "string" && choice.finish_reason) {
+          finish = classifyFinish(choice.finish_reason);
+          // Unbekannte Gruende landen unter "error" — dann steht der echte im Log.
+          if (finish === "error") detail = choice.finish_reason;
+        }
+      }
+    }
+  } finally {
+    // Abbrechen statt nur loslassen: sonst liest der Anbieter weiter, obwohl
+    // niemand mehr zuhoert — etwa wenn der Browser zu ist.
+    reader.cancel().catch(() => {});
+  }
+
+  // Manche Anbieter schicken nur finish_reason, manche nur [DONE]. Fehlt
+  // beides, ist die Verbindung einfach weggebrochen.
+  let end: StreamEnd = finish ?? (sawDone ? "stop" : "cut");
+  if (end === "stop" && chars === 0) end = "empty";
+
+  debugLog("chat", "stream completed", {
+    provider: attempt.provider,
+    model,
+    end,
+    detail,
+    assistantChars: chars,
+  });
+  debugContentLog("chat", "assistant preview", preview);
+
+  return { end, chars, model, detail };
+}
+
 export async function* streamChat(
   rawHistory: ChatMessage[]
 ): AsyncGenerator<ChatStreamEvent> {
@@ -1004,43 +1191,20 @@ export async function* streamChat(
     return;
   }
 
-  let resp: Response | null = null;
-  let chosen: Attempt | null = null;
   let lastStatus = 0;
+  let retries = 0;
+  // Ist schon eine Teil-Antwort beim Browser, darf die Schleife nicht mehr mit
+  // einer Fehlermeldung enden — die wuerde die Teil-Antwort wegwerfen.
+  let partialShown = false;
 
   for (const attempt of attempts) {
+    let resp: Response;
     try {
-      const r = await fetch(attempt.url, {
+      resp = await fetch(attempt.url, {
         method: "POST",
         headers: attempt.headers,
         body: JSON.stringify(attempt.body),
       });
-      if (r.ok && r.body) {
-        console.log(`[chat] using ${attempt.label}`);
-        debugLog("chat", "provider accepted request", {
-          provider: attempt.provider,
-          label: attempt.label,
-        });
-        if (attempt.provider === "gemini") markHealthy(attempt.fallbackModel);
-        resp = r;
-        chosen = attempt;
-        break;
-      }
-      lastStatus = r.status;
-      const text = await r.text().catch(() => "");
-      console.error(
-        `[chat] ${attempt.label} -> ${r.status}: ${text.slice(0, 500)}`
-      );
-      debugLog("chat", "provider returned non-ok response", {
-        provider: attempt.provider,
-        label: attempt.label,
-        status: r.status,
-        bodyPreview: text.slice(0, 240),
-      });
-      if (attempt.provider === "gemini") {
-        const kind = classifyStatus(r.status);
-        if (kind) markUnhealthy(attempt.fallbackModel, kind);
-      }
     } catch (err) {
       lastStatus = 0;
       console.error(
@@ -1051,85 +1215,78 @@ export async function* streamChat(
         label: attempt.label,
         message: (err as Error).message,
       });
-      if (attempt.provider === "gemini") markUnhealthy(attempt.fallbackModel, "network");
+      recordProviderError(attempt, "Netzwerk");
+      if (tracksHealth(attempt)) markUnhealthy(attempt.fallbackModel, "network");
+      continue;
     }
+
+    if (!resp.ok || !resp.body) {
+      lastStatus = resp.status;
+      const text = await resp.text().catch(() => "");
+      console.error(
+        `[chat] ${attempt.label} -> ${resp.status}: ${text.slice(0, 500)}`
+      );
+      debugLog("chat", "provider returned non-ok response", {
+        provider: attempt.provider,
+        label: attempt.label,
+        status: resp.status,
+        bodyPreview: text.slice(0, 240),
+      });
+      recordProviderError(attempt, `HTTP ${resp.status}`);
+      if (tracksHealth(attempt)) {
+        const kind = classifyStatus(resp.status);
+        if (kind) markUnhealthy(attempt.fallbackModel, kind);
+      }
+      continue;
+    }
+
+    console.log(`[chat] using ${attempt.label}`);
+    debugLog("chat", "provider accepted request", {
+      provider: attempt.provider,
+      label: attempt.label,
+    });
+
+    const result = yield* readProviderStream(resp, attempt);
+    const summary = `${result.end}, ${result.chars} Zeichen${result.detail ? ` (${result.detail})` : ""}`;
+
+    if (result.end === "stop") {
+      console.log(`[chat] ${attempt.provider}/${result.model} fertig: ${summary}`);
+      if (tracksHealth(attempt)) markHealthy(attempt.fallbackModel);
+      yield { type: "done" };
+      return;
+    }
+
+    console.error(`[chat] ${attempt.provider}/${result.model} abgebrochen: ${summary}`);
+    stats.record("provider_error");
+    stats.record("provider_error", `${END_LABEL[result.end]} · ${result.model}`);
+    // Token-Grenze und Filter sagen nichts darueber, ob das Modell gerade
+    // klemmt. Alles andere schon: dann die naechste Minute nicht mehr fragen.
+    if (tracksHealth(attempt) && result.end !== "length" && result.end !== "content_filter") {
+      markUnhealthy(attempt.fallbackModel, "overload");
+    }
+
+    // Kam gar nichts an, ist das fuer den Browser dasselbe wie ein 503: still
+    // das naechste Modell fragen, ohne einen Neuversuch zu verbrauchen.
+    if (result.chars === 0) {
+      lastStatus = 502;
+      continue;
+    }
+
+    partialShown = true;
+    // Die Token-Grenze war bei einer langen Antwort erreicht — ein anderes
+    // Modell stoesst vermutlich an dieselbe. Dann lieber der Hinweis.
+    if (result.end === "length" || retries >= MAX_STREAM_RETRIES) {
+      yield { type: "done", truncated: true };
+      return;
+    }
+    retries += 1;
+    yield { type: "retry" };
   }
 
-  if (!resp || !resp.body || !chosen) {
-    debugLog("chat", "all providers failed", { lastStatus });
-    yield { type: "error", message: friendlyError(lastStatus) };
+  if (partialShown) {
+    yield { type: "done", truncated: true };
     return;
   }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  // Wir wollen genau ein model-Event yielden — und zwar mit dem echten
-  // Modell, das der Provider gewählt hat (relevant für OpenRouter, das
-  // server-seitig durch die Liste fällt). Beide Provider echoen das Modell
-  // im SSE-Chunk-JSON unter `model`. Falls aus irgendeinem Grund kein
-  // Chunk ein `model`-Feld hat, fallen wir auf attempt.fallbackModel zurück.
-  let modelEventSent = false;
-  let assistantChars = 0;
-  let assistantPreview = "";
-  const sendModelEvent = (model: string): ChatStreamEvent => {
-    modelEventSent = true;
-    debugLog("chat", "model event", {
-      provider: chosen!.provider,
-      model,
-    });
-    return { type: "model", provider: chosen!.provider, model };
-  };
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // Beide Provider streamen OpenAI-style SSE: Zeilen `data: {...}`,
-      // Terminator `data: [DONE]`.
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-        const payload = trimmed.slice(5).trim();
-        if (payload === "[DONE]") {
-          if (!modelEventSent) yield sendModelEvent(chosen.fallbackModel);
-          yield { type: "done" };
-          return;
-        }
-        try {
-          const json = JSON.parse(payload);
-          if (!modelEventSent && typeof json.model === "string" && json.model.length > 0) {
-            yield sendModelEvent(json.model);
-          }
-          const delta = json.choices?.[0]?.delta?.content;
-          if (typeof delta === "string" && delta.length > 0) {
-            assistantChars += delta.length;
-            if (assistantPreview.length < 1000) {
-              assistantPreview += delta;
-            }
-            yield { type: "token", text: delta };
-          }
-        } catch {
-          // Swallow keepalives, OpenRouter comment lines, malformed fragments.
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  debugLog("chat", "stream completed", {
-    provider: chosen.provider,
-    fallbackModel: chosen.fallbackModel,
-    assistantChars,
-  });
-  debugContentLog("chat", "assistant preview", assistantPreview);
-
-  if (!modelEventSent) yield sendModelEvent(chosen.fallbackModel);
-  yield { type: "done" };
+  debugLog("chat", "all providers failed", { lastStatus });
+  yield { type: "error", message: friendlyError(lastStatus) };
 }
